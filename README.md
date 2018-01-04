@@ -21,6 +21,12 @@ HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片�
 
 我的环境：(Ubuntu 17.10)
 
+* 环境一：物理服务器，网卡：Intel Corporation 82574L Gigabit Network Connection
+* 环境二：VMware ESXi 虚拟机，网卡：vmxnet3
+* 环境三：MacBook Pro Virtual Box虚拟机，网卡：Intel PRO/1000 MT服务器(82545EM)
+
+DPDK支持的网卡请参见 [Supported NICs](http://dpdk.org/doc/nics)
+
 ```
 安装Ubuntu artful(17.10)
 

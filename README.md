@@ -25,6 +25,8 @@ HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片�
 * 环境二：VMware ESXi 虚拟机，网卡：vmxnet3
 * 环境三：MacBook Pro Virtual Box虚拟机，网卡：Intel PRO/1000 MT服务器(82545EM)
 
+注意：程序运行时占用1个核100% CPU，如果是笔记本电脑发热严重。
+
 DPDK支持的网卡请参见 [Supported NICs](http://dpdk.org/doc/nics)
 
 ```

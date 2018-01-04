@@ -61,7 +61,8 @@
 #define TCPMSS 1400
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN }
+	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN },
+	.txmode = { .mq_mode = ETH_MQ_TX_NONE },
 };
 
 typedef unsigned long int uint32;
@@ -83,7 +84,6 @@ struct __attribute__((packed)) arp_header
 struct ether_addr my_eth_addr;	// My ethernet address
 uint32 my_ip;  			// My IP Address in network order
 uint16 tcp_port; 		// listen tcp port in network order
-
 
 int user_init_func(int , char *[]);
 
@@ -148,10 +148,25 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
+	struct rte_eth_dev_info dev_info;
+	rte_eth_dev_info_get(port, &dev_info);
+	if(dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) 
+		printf("RX IPv4 checksum: support\n");
+	if(dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM) 
+		printf("RX TCP  checksum: support\n");
+	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM) 
+		printf("TX IPv4 checksum: support\n");
+	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) 
+		printf("TX TCP  checksum: support\n");
+
+	/* Dsiable features that are not supported by port's HW */
+	if(! (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) )
+		dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
+
 	/* Allocate and set up 1 TX queue per Ethernet port. */
 	for (q = 0; q < tx_rings; q++) {
 		retval = rte_eth_tx_queue_setup(port, q, nb_txd,
-				rte_eth_dev_socket_id(port), NULL);
+				rte_eth_dev_socket_id(port), &dev_info.default_txconf);
 		if (retval < 0)
 			return retval;
 	}

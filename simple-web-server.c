@@ -152,10 +152,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		printf("TX IPv4 checksum: support\n");
 	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) 
 		printf("TX TCP  checksum: support\n");
-	if( dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM & DEV_TX_OFFLOAD_IPV4_CKSUM ) {
-		printf("TX IPv4/TCP checksum: supported, so I will use hardware checksum\n");
+	if( (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
+		&& (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM) ) {
+		printf("TX IPv4/TCP checksum both supported, so I will use hardware checksum\n");
 		hw_cksum = 1;
-	}
+	} else
+		printf("I will not use hardware checksum\n");
 
 	/* Dsiable features that are not supported by port's HW */
 	if(! (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) )
@@ -430,7 +432,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 		} else
 			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
-		printf("I will reply following \n");
+		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
@@ -467,7 +469,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 		} else
 			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
-		printf("I will reply following \n");
+		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
@@ -529,7 +531,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 		} else
 		set_tcp_checksum(iph);
 #ifdef DEBUGTCP
-		printf("I will reply following \n");
+		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);

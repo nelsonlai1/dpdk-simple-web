@@ -41,7 +41,9 @@
 #include <rte_ethdev.h>
 #include <rte_cycles.h>
 #include <rte_lcore.h>
+#include <rte_byteorder.h>
 #include <rte_mbuf.h>
+#include <rte_ip.h>
 
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
@@ -80,6 +82,8 @@ struct __attribute__((packed)) arp_header
 	unsigned char arp_dha[6];
 	unsigned char arp_dpa[4];
 };
+
+int hw_cksum = 0;
 
 struct ether_addr my_eth_addr;	// My ethernet address
 uint32 my_ip;  			// My IP Address in network order
@@ -156,8 +160,10 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		printf("RX TCP  checksum: support\n");
 	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM) 
 		printf("TX IPv4 checksum: support\n");
-	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) 
-		printf("TX TCP  checksum: support\n");
+	if(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) {
+		printf("TX TCP  checksum: support, I will use hardware checksum\n");
+		hw_cksum = 1;
+	}
 
 	/* Dsiable features that are not supported by port's HW */
 	if(! (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) )
@@ -410,7 +416,17 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 		iph->tot_len = htons(pkt_len);
 		iph->check = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
-		set_tcp_checksum(iph);
+		if(hw_cksum) {
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM |PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = 14;
+			mbuf->l3_len = iph->ihl * 4;
+			mbuf->l4_len = 0;
+			iph->check = 0;
+			tcph->check = 0;
+			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+		} else
+			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
 		printf("I will reply following \n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
@@ -437,7 +453,17 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 		iph->tot_len = htons(pkt_len);
 		iph->check = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
-		set_tcp_checksum(iph);
+		if(hw_cksum) {
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM |PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = 14;
+			mbuf->l3_len = iph->ihl * 4;
+			mbuf->l4_len = 0;
+			iph->check = 0;
+			tcph->check = 0;
+			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+		} else
+			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
 		printf("I will reply following \n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
@@ -491,6 +517,16 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 		tcph->ack_seq = ack_seq;
 		iph->check = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
+		if(hw_cksum) {
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM |PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = 14;
+			mbuf->l3_len = iph->ihl * 4;
+			mbuf->l4_len = ntcp_payload_len;
+			iph->check = 0;
+			tcph->check = 0;
+			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+		} else
 		set_tcp_checksum(iph);
 #ifdef DEBUGTCP
 		printf("I will reply following \n");

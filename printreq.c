@@ -1,6 +1,6 @@
 #include "simple-web-server.c"
 
-int user_init_func(int argc, char *argv[])
+int user_init_func(int argc __attribute__((unused)), char *argv[] __attribute__((unused)))
 {
 	printf("user_init_func: argc=%d\n",argc);
 	return 0;

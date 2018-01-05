@@ -51,7 +51,6 @@
 
 #include <linux/if_packet.h>
 #include <linux/ip.h>
-#include <linux/tcp.h>
 #include <arpa/inet.h>
 
 #define RX_RING_SIZE 128
@@ -62,6 +61,12 @@
 #define BURST_SIZE 32
 
 #define TCPMSS 1400
+
+#define TCP_FIN 0x01
+#define TCP_SYN 0x02
+#define TCP_RST 0x04
+#define TCP_PSH 0x08
+#define TCP_ACK 0x10
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = { .max_rx_pkt_len = ETHER_MAX_LEN },
@@ -371,9 +376,9 @@ static void set_tcp_checksum(struct iphdr *ip);
 
 static void set_tcp_checksum(struct iphdr *ip)
 {
-	struct tcphdr *tcph = (struct tcphdr *)((u_int8_t *) ip + (ip->ihl << 2));
-	tcph->check = 0;	/* Checksum field has to be set to 0 before checksumming */
-	tcph->check = (u_int16_t) tcp_sum_calc((u_int16_t) (ntohs(ip->tot_len) - ip->ihl * 4),
+	struct tcp_hdr *tcph = (struct tcp_hdr *)((u_int8_t *) ip + (ip->ihl << 2));
+	tcph->cksum = 0;	/* Checksum field has to be set to 0 before checksumming */
+	tcph->cksum = (u_int16_t) tcp_sum_calc((u_int16_t) (ntohs(ip->tot_len) - ip->ihl * 4),
 		       (u_int16_t *) & ip->saddr, (u_int16_t *) & ip->daddr, (u_int16_t *) tcph);
 	ip->check=0;
 	ip->check = packet_chksum((unsigned short *) ip, ip->ihl<<2);
@@ -387,29 +392,29 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 
 int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, int iphdrlen)
 {
-	struct tcphdr *tcph = (struct tcphdr *)((unsigned char*)(iph)+iphdrlen);
+	struct tcp_hdr *tcph = (struct tcp_hdr *)((unsigned char*)(iph)+iphdrlen);
 	int pkt_len;
 #ifdef DEBUGTCP
-	printf("TCP packet, dport=%d\n",ntohs(tcph->dest));
-	printf("TCP syn=%d ack=%d fin=%d\n",tcph->syn, tcph->ack, tcph->fin);
+	printf("TCP packet, dport=%d\n",ntohs(tcph->dst_port));
+	printf("TCP flags=%d\n",tcph->tcp_flags);
 #endif
-	if (tcph->dest != tcp_port) 
+	if (tcph->dst_port != tcp_port)
 		return 0;
 
-	if (tcph->syn && (!tcph->ack)) {	// SYN packet, send SYN+ACK
+	if ((tcph->tcp_flags & (TCP_SYN|TCP_ACK)) == TCP_SYN) {	// SYN packet, send SYN+ACK
 #ifdef DEBUGTCP
 		printf("SYN packet\n");
 #endif
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
-		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
-		tcph->ack = 1;
-		tcph->ack_seq = htonl(ntohl(tcph->seq) + 1);
-		tcph->seq = htonl(1);
-		tcph->doff = 20 / 4;
-		pkt_len = iph->ihl * 4 + tcph->doff * 4;
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		tcph->tcp_flags = TCP_ACK | TCP_SYN;
+		tcph->recv_ack = htonl(ntohl(tcph->sent_seq) + 1);
+		tcph->sent_seq = htonl(1);
+		tcph->data_off = 5 << 4;
+		pkt_len = iph->ihl * 4 + 20;
 		iph->tot_len = htons(pkt_len);
-		iph->check = 0;
+		iph->check= 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
 		if(hw_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
@@ -418,8 +423,8 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 			mbuf->l3_len = iph->ihl * 4;
 			mbuf->l4_len = 0;
 			iph->check = 0;
-			tcph->check = 0;
-			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			tcph->cksum= 0;
+			tcph->cksum= rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else
 			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
@@ -433,18 +438,18 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 		printf("send tcp packet return %d\n", ret);
 #endif
 		return 0;
-	} else if (tcph->fin) {	// FIN packet, send ACK
+	} else if (tcph->tcp_flags & TCP_FIN) {	// FIN packet, send ACK
 #ifdef DEBUGTCP
 		fprintf(stderr, "FIN packet\n");
 #endif
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
-		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
-		swap_bytes((unsigned char *)&tcph->seq, (unsigned char *)&tcph->ack_seq, 4);
-		tcph->ack = 1;
-		tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
-		tcph->doff = 20 / 4;
-		pkt_len = iph->ihl * 4 + tcph->doff * 4;
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
+		tcph->tcp_flags = TCP_ACK;
+		tcph->recv_ack = htonl(ntohl(tcph->recv_ack) + 1);
+		tcph->data_off = 5 << 4;
+		pkt_len = iph->ihl * 4 + 20;
 		iph->tot_len = htons(pkt_len);
 		iph->check = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
@@ -455,8 +460,8 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 			mbuf->l3_len = iph->ihl * 4;
 			mbuf->l4_len = 0;
 			iph->check = 0;
-			tcph->check = 0;
-			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			tcph->cksum= 0;
+			tcph->cksum= rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else
 			set_tcp_checksum(iph);
 #ifdef DEBUGTCP
@@ -470,9 +475,9 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 		fprintf(stderr, "send tcp packet return %d\n", ret);
 #endif
 		return 0;
-	}  else if (tcph->ack && (!tcph->syn)) {	// ACK packet, send DATA
+	} else if ((tcph->tcp_flags & (TCP_SYN|TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
 		pkt_len = ntohs(iph->tot_len);
-		int tcp_payload_len = pkt_len - iph->ihl * 4 - tcph->doff * 4;
+		int tcp_payload_len = pkt_len - iph->ihl * 4 - (tcph->data_off>>4) * 4;
 		int ntcp_payload_len = TCPMSS;
 		unsigned char *tcp_payload;
 		unsigned char buf[TCPMSS]; // http_respone
@@ -488,28 +493,26 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 #endif
 			return 0;
 		}
-		tcp_payload = (unsigned char*)iph + iph->ihl * 4 + tcph->doff * 4;
+		tcp_payload = (unsigned char*)iph + iph->ihl * 4 + (tcph->data_off>>4) * 4;
 		if(process_http(tcp_payload, tcp_payload_len, buf, &ntcp_payload_len, &resp_in_req)==0)
 			return 0;
 #ifdef DEBUGTCP
 		printf("new payload len=%d :%s:\n",ntcp_payload_len, buf);
 #endif
-		uint32_t ack_seq = htonl(ntohl(tcph->seq) + tcp_payload_len);
+		uint32_t ack_seq = htonl(ntohl(tcph->sent_seq) + tcp_payload_len);
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
-		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
 		if(!resp_in_req)
 			memcpy(tcp_payload, buf, ntcp_payload_len);
-		pkt_len = ntcp_payload_len + iph->ihl * 4 + tcph->doff * 4;
+		pkt_len = ntcp_payload_len + iph->ihl * 4 + (tcph->data_off>>4) * 4;
 		iph->tot_len = htons(pkt_len);
 #ifdef DEBUGTCP
 		fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
-		tcph->ack = 1;
-		tcph->psh = 1;
-		tcph->fin = 1;
-		tcph->seq = tcph->ack_seq;
-		tcph->ack_seq = ack_seq;
+		tcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
+		tcph->sent_seq = tcph->recv_ack;
+		tcph->recv_ack = ack_seq;
 		iph->check = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
 		if(hw_cksum) {
@@ -519,8 +522,8 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, 
 			mbuf->l3_len = iph->ihl * 4;
 			mbuf->l4_len = ntcp_payload_len;
 			iph->check = 0;
-			tcph->check = 0;
-			tcph->check = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			tcph->cksum = 0;
+			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else
 		set_tcp_checksum(iph);
 #ifdef DEBUGTCP

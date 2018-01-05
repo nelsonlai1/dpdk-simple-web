@@ -17,7 +17,7 @@ HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片�
 * 响应ARP
 * 响应ICMP echo
 * 响应TCP SYN
-* 响应HTTP GET
+* 响应HTTP
 
 我的环境：(Ubuntu 17.10)
 
@@ -99,7 +99,6 @@ Completed 80000 requests
 Completed 90000 requests
 Completed 100000 requests
 Finished 100000 requests
-
 
 Server Software:        dpdk-simple-web-server
 Server Hostname:        222.195.81.233

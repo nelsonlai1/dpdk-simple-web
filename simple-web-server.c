@@ -43,13 +43,13 @@
 #include <rte_lcore.h>
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
+#include <rte_ether.h>
 #include <rte_arp.h>
 #include <rte_icmp.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
 
 #include <linux/if_packet.h>
-#include <linux/if_ether.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <arpa/inet.h>
@@ -79,8 +79,8 @@ int user_init_func(int , char *[]);
 char * INET_NTOA(uint32_t ip);
 void swap_bytes(unsigned char *a, unsigned char *b, int len);
 void dump_packet(unsigned char *buf, int len);
-void dump_arp_packet(struct ethhdr *eh);
-int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh);
+void dump_arp_packet(struct ether_hdr *eh);
+int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh);
 
 char * INET_NTOA(uint32_t ip)	// ip is network order
 {
@@ -209,18 +209,20 @@ void dump_packet(unsigned char *buf, int len)
 	}
 }
 
-void dump_arp_packet(struct ethhdr *eh)
+void dump_arp_packet(struct ether_hdr *eh)
 {
 	struct arp_hdr *ah;
 	ah = (struct arp_hdr*) ((unsigned char *)eh + 14);
 	printf("+++++++++++++++++++++++++++++++++++++++\n" );
 	printf("ARP PACKET: %p \n",eh);
 	printf("ETHER DST MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-		eh->h_dest[0], eh->h_dest[1], eh->h_dest[2], eh->h_dest[3],
-		eh->h_dest[4], eh->h_dest[5]);
+		eh->d_addr.addr_bytes[0], eh->d_addr.addr_bytes[1],
+		eh->d_addr.addr_bytes[2], eh->d_addr.addr_bytes[3],
+		eh->d_addr.addr_bytes[4], eh->d_addr.addr_bytes[5]);
 	printf("ETHER SRC MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-		eh->h_source[0], eh->h_source[1], eh->h_source[2],
-		eh->h_source[3], eh->h_source[4], eh->h_source[5]);
+		eh->s_addr.addr_bytes[0], eh->s_addr.addr_bytes[1],
+		eh->s_addr.addr_bytes[2], eh->s_addr.addr_bytes[3],
+		eh->s_addr.addr_bytes[4], eh->s_addr.addr_bytes[5]);
 	printf("H/D TYPE : %x PROTO TYPE : %X \n",ah->arp_hrd,ah->arp_pro);
 	printf("H/D leng : %x PROTO leng : %X \n",ah->arp_hln,ah->arp_pln);
 	printf("OPERATION : %x \n", ah->arp_op);
@@ -246,7 +248,7 @@ void dump_arp_packet(struct ethhdr *eh)
 
 #define DEBUGARP
 
-int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
+int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh)
 {
 	struct arp_hdr *ah;
 	ah = (struct arp_hdr*) ((unsigned char *)eh + 14);
@@ -260,8 +262,8 @@ int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
 #ifdef DEBUGARP
 		printf("Asking me....\n");
 #endif
-		memcpy((unsigned char*)eh->h_dest, (unsigned char*)eh->h_source, 6);
-		memcpy((unsigned char*)eh->h_source, (unsigned char*)&my_eth_addr, 6);
+		memcpy((unsigned char*)&eh->d_addr, (unsigned char*)&eh->s_addr, 6);
+		memcpy((unsigned char*)&eh->s_addr, (unsigned char*)&my_eth_addr, 6);
 		ah->arp_op=htons(ARP_OP_REPLY);
 		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
 		memcpy((unsigned char*)&ah->arp_data.arp_sha, (unsigned char*)&my_eth_addr, 6);
@@ -278,7 +280,7 @@ int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
 }
 
 unsigned short packet_chksum(unsigned short *addr,int len);
-int process_icmp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int iphdrlen, int len);
+int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, int iphdrlen, int len);
 
 unsigned short packet_chksum(unsigned short *addr,int len)
 {
@@ -302,15 +304,15 @@ unsigned short packet_chksum(unsigned short *addr,int len)
 
 #define DEBUGICMP
 
-int process_icmp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int iphdrlen, int len)
+int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, int iphdrlen, int len)
 {
 	struct icmp_hdr *icmph = (struct icmp_hdr *)((unsigned char*)(iph)+iphdrlen);
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n",icmph->icmp_type,icmph->icmp_code);
 #endif
 	if((icmph->icmp_type==IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code==0)) {  // ICMP echo req
-		memcpy((unsigned char*)eh->h_dest, (unsigned char*)eh->h_source, 6);
-		memcpy((unsigned char*)eh->h_source, (unsigned char*)&my_eth_addr, 6);
+		memcpy((unsigned char*)&eh->d_addr, (unsigned char*)&eh->s_addr, 6);
+		memcpy((unsigned char*)&eh->s_addr, (unsigned char*)&my_eth_addr, 6);
 		memcpy((unsigned char*)&iph->daddr, (unsigned char*)&iph->saddr, 4);
 		memcpy((unsigned char*)&iph->saddr, (unsigned char*)&my_ip, 4);
 		icmph->icmp_type=IP_ICMP_ECHO_REPLY;
@@ -381,9 +383,9 @@ int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp,
 
 // #define DEBUGTCP
 
-int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int iphdrlen);
+int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, int iphdrlen);
 
-int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int iphdrlen)
+int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct iphdr *iph, int iphdrlen)
 {
 	struct tcphdr *tcph = (struct tcphdr *)((unsigned char*)(iph)+iphdrlen);
 	int pkt_len;
@@ -398,7 +400,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 #ifdef DEBUGTCP
 		printf("SYN packet\n");
 #endif
-		swap_bytes((unsigned char *)&eh->h_source, (unsigned char *)&eh->h_dest, 6);
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
 		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
 		tcph->ack = 1;
@@ -435,7 +437,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 #ifdef DEBUGTCP
 		fprintf(stderr, "FIN packet\n");
 #endif
-		swap_bytes((unsigned char *)&eh->h_source, (unsigned char *)&eh->h_dest, 6);
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
 		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
 		swap_bytes((unsigned char *)&tcph->seq, (unsigned char *)&tcph->ack_seq, 4);
@@ -493,7 +495,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 		printf("new payload len=%d :%s:\n",ntcp_payload_len, buf);
 #endif
 		uint32_t ack_seq = htonl(ntohl(tcph->seq) + tcp_payload_len);
-		swap_bytes((unsigned char *)&eh->h_source, (unsigned char *)&eh->h_dest, 6);
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
 		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);
 		if(!resp_in_req)
@@ -575,12 +577,12 @@ lcore_main(void)
 #endif
 		for(i=0;i<nb_rx;i++) {
 			int len = rte_pktmbuf_data_len(bufs[i]);
-			struct ethhdr *eh = rte_pktmbuf_mtod(bufs[i], struct ethhdr*);
+			struct ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct ether_hdr*);
 #ifdef DEBUGPACKET
 			dump_packet((unsigned char*)eh, len);
 			printf("ethernet proto=%4X\n",htons(eh->h_proto));
 #endif
-			if(eh->h_proto==htons(0x0800)){  // IPv4 protocol
+			if(eh->ether_type==htons(ETHER_TYPE_IPv4)){  // IPv4 protocol
 				struct iphdr *iph;
 				iph = (struct iphdr*)((unsigned char*)(eh)+14);
 				int iphdrlen=iph->ihl<<2;
@@ -600,7 +602,7 @@ lcore_main(void)
 							continue;
 					}
 				}
-			} else if(eh->h_proto == htons(0x0806)){  // ARP protocol
+			} else if(eh->ether_type == htons(ETHER_TYPE_ARP)){  // ARP protocol
 				if(process_arp(bufs[i], eh))
 					continue;
 			}

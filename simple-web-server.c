@@ -50,9 +50,7 @@
 
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
-#include <linux/if_arp.h>
 #include <linux/ip.h>
-#include <linux/icmp.h>
 #include <linux/tcp.h>
 #include <arpa/inet.h>
 
@@ -223,8 +221,8 @@ void dump_arp_packet(struct ethhdr *eh)
 	printf("ETHER SRC MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
 		eh->h_source[0], eh->h_source[1], eh->h_source[2],
 		eh->h_source[3], eh->h_source[4], eh->h_source[5]);
-	printf("H/D TYPE : %x PROTO TYPE : %x \n",ah->arp_hrd,ah->arp_pro);
-	printf("H/D leng : %x PROTO leng : %x \n",ah->arp_hln,ah->arp_pln);
+	printf("H/D TYPE : %x PROTO TYPE : %X \n",ah->arp_hrd,ah->arp_pro);
+	printf("H/D leng : %x PROTO leng : %X \n",ah->arp_hln,ah->arp_pln);
 	printf("OPERATION : %x \n", ah->arp_op);
 	printf("SENDER MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
 		ah->arp_data.arp_sha.addr_bytes[0], ah->arp_data.arp_sha.addr_bytes[1],
@@ -246,7 +244,7 @@ void dump_arp_packet(struct ethhdr *eh)
 		((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[3]));
 }
 
-// #define DEBUGARP
+#define DEBUGARP
 
 int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
 {
@@ -264,7 +262,7 @@ int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
 #endif
 		memcpy((unsigned char*)eh->h_dest, (unsigned char*)eh->h_source, 6);
 		memcpy((unsigned char*)eh->h_source, (unsigned char*)&my_eth_addr, 6);
-		ah->arp_op=htons(0x2);
+		ah->arp_op=htons(ARP_OP_REPLY);
 		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
 		memcpy((unsigned char*)&ah->arp_data.arp_sha, (unsigned char*)&my_eth_addr, 6);
 		ah->arp_data.arp_tip = ah->arp_data.arp_sip;
@@ -302,22 +300,22 @@ unsigned short packet_chksum(unsigned short *addr,int len)
 	return answer;
 }
 
-// #define DEBUGICMP
+#define DEBUGICMP
 
 int process_icmp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int iphdrlen, int len)
 {
-	struct icmphdr *icmph = (struct icmphdr *)((unsigned char*)(iph)+iphdrlen);
+	struct icmp_hdr *icmph = (struct icmp_hdr *)((unsigned char*)(iph)+iphdrlen);
 #ifdef DEBUGICMP
-	printf("icmp type=%d, code=%d\n",icmph->type,icmph->code);
+	printf("icmp type=%d, code=%d\n",icmph->icmp_type,icmph->icmp_code);
 #endif
-	if((icmph->type==8) && (icmph->code==0)) {  // ICMP echo req
+	if((icmph->icmp_type==IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code==0)) {  // ICMP echo req
 		memcpy((unsigned char*)eh->h_dest, (unsigned char*)eh->h_source, 6);
 		memcpy((unsigned char*)eh->h_source, (unsigned char*)&my_eth_addr, 6);
 		memcpy((unsigned char*)&iph->daddr, (unsigned char*)&iph->saddr, 4);
 		memcpy((unsigned char*)&iph->saddr, (unsigned char*)&my_ip, 4);
-		icmph->type=0;
-		icmph->checksum=0;
-		icmph->checksum = packet_chksum((unsigned short*)icmph, len - 14 - iphdrlen );
+		icmph->icmp_type=IP_ICMP_ECHO_REPLY;
+		icmph->icmp_cksum=0;
+		icmph->icmp_cksum = packet_chksum((unsigned short*)icmph, len - 14 - iphdrlen );
 #ifdef DEBUGICMP
 		printf("I will send reply\n");
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char*), len);

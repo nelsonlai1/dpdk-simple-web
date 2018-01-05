@@ -43,7 +43,10 @@
 #include <rte_lcore.h>
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
+#include <rte_arp.h>
+#include <rte_icmp.h>
 #include <rte_ip.h>
+#include <rte_tcp.h>
 
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
@@ -67,37 +70,21 @@ static const struct rte_eth_conf port_conf_default = {
 	.txmode = { .mq_mode = ETH_MQ_TX_NONE },
 };
 
-typedef unsigned long int uint32;
-typedef unsigned short int uint16;
-
-struct __attribute__((packed)) arp_header
-{
-	unsigned short arp_hd;
-	unsigned short arp_pr;
-	unsigned char arp_hdl;
-	unsigned char arp_prl;
-	unsigned short arp_op;
-	unsigned char arp_sha[6];
-	unsigned char arp_spa[4];
-	unsigned char arp_dha[6];
-	unsigned char arp_dpa[4];
-};
-
 int hw_cksum = 0;
 
 struct ether_addr my_eth_addr;	// My ethernet address
-uint32 my_ip;  			// My IP Address in network order
-uint16 tcp_port; 		// listen tcp port in network order
+uint32_t my_ip;  			// My IP Address in network order
+uint16_t tcp_port; 		// listen tcp port in network order
 
 int user_init_func(int , char *[]);
 
-char * INET_NTOA(uint32 ip);
+char * INET_NTOA(uint32_t ip);
 void swap_bytes(unsigned char *a, unsigned char *b, int len);
 void dump_packet(unsigned char *buf, int len);
 void dump_arp_packet(struct ethhdr *eh);
 int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh);
 
-char * INET_NTOA(uint32 ip)	// ip is network order
+char * INET_NTOA(uint32_t ip)	// ip is network order
 {
 	static char buf[100];
 	sprintf(buf,"%d.%d.%d.%d",
@@ -226,54 +213,62 @@ void dump_packet(unsigned char *buf, int len)
 
 void dump_arp_packet(struct ethhdr *eh)
 {
-	struct arp_header *ah;
-	ah = (struct arp_header*) ((unsigned char *)eh + 14);
+	struct arp_hdr *ah;
+	ah = (struct arp_hdr*) ((unsigned char *)eh + 14);
 	printf("+++++++++++++++++++++++++++++++++++++++\n" );
 	printf("ARP PACKET: %p \n",eh);
 	printf("ETHER DST MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
 		eh->h_dest[0], eh->h_dest[1], eh->h_dest[2], eh->h_dest[3],
 		eh->h_dest[4], eh->h_dest[5]);
 	printf("ETHER SRC MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-		eh->h_source[0], eh->h_source[1], eh->h_source[2], eh->h_source[3], eh->h_source[4],
-		eh->h_source[5]);
-	printf("H/D TYPE : %x PROTO TYPE : %x \n",ah->arp_hd,ah->arp_pr);
-	printf("H/D leng : %x PROTO leng : %x \n",ah->arp_hdl,ah->arp_prl);
+		eh->h_source[0], eh->h_source[1], eh->h_source[2],
+		eh->h_source[3], eh->h_source[4], eh->h_source[5]);
+	printf("H/D TYPE : %x PROTO TYPE : %x \n",ah->arp_hrd,ah->arp_pro);
+	printf("H/D leng : %x PROTO leng : %x \n",ah->arp_hln,ah->arp_pln);
 	printf("OPERATION : %x \n", ah->arp_op);
 	printf("SENDER MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-		ah->arp_sha[0], ah->arp_sha[1], ah->arp_sha[2], ah->arp_sha[3],
-		ah->arp_sha[4], ah->arp_sha[5]);
+		ah->arp_data.arp_sha.addr_bytes[0], ah->arp_data.arp_sha.addr_bytes[1],
+		ah->arp_data.arp_sha.addr_bytes[2], ah->arp_data.arp_sha.addr_bytes[3],
+		ah->arp_data.arp_sha.addr_bytes[4], ah->arp_data.arp_sha.addr_bytes[5]);
 	printf("SENDER IP address: %02d:%02d:%02d:%02d\n",
-		ah->arp_spa[0], ah->arp_spa[1], ah->arp_spa[2], ah->arp_spa[3]);
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_sip))[0]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_sip))[1]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_sip))[2]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_sip))[3]));
 	printf("TARGET MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-		ah->arp_dha[0], ah->arp_dha[1], ah->arp_dha[2], ah->arp_dha[3],
-		ah->arp_dha[4], ah->arp_dha[5]);
+		ah->arp_data.arp_tha.addr_bytes[0], ah->arp_data.arp_tha.addr_bytes[1],
+		ah->arp_data.arp_tha.addr_bytes[2], ah->arp_data.arp_tha.addr_bytes[3],
+		ah->arp_data.arp_tha.addr_bytes[4], ah->arp_data.arp_tha.addr_bytes[5]);
 	printf("TARGET IP address: %02d:%02d:%02d:%02d\n",
-		ah->arp_dpa[0], ah->arp_dpa[1], ah->arp_dpa[2], ah->arp_dpa[3]);
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[0]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[1]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[2]),
+		((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[3]));
 }
 
 // #define DEBUGARP
 
 int process_arp(struct rte_mbuf *mbuf, struct ethhdr *eh)
 {
-	struct arp_header *ah;
-	ah = (struct arp_header*) ((unsigned char *)eh + 14);
+	struct arp_hdr *ah;
+	ah = (struct arp_hdr*) ((unsigned char *)eh + 14);
 #ifdef DEBUGARP
 	dump_arp_packet(eh);
 #endif
-	if(htons(ah->arp_op) != 0x0001) { // ARP request
+	if(htons(ah->arp_op) != ARP_OP_REQUEST ) { // ARP request
 		return 0;
 	}
-	if(memcmp((unsigned char*)&my_ip, (unsigned char*)ah->arp_dpa, 4)==0) {
+	if(my_ip == ah->arp_data.arp_tip) {
 #ifdef DEBUGARP
 		printf("Asking me....\n");
 #endif
 		memcpy((unsigned char*)eh->h_dest, (unsigned char*)eh->h_source, 6);
 		memcpy((unsigned char*)eh->h_source, (unsigned char*)&my_eth_addr, 6);
 		ah->arp_op=htons(0x2);
-		memcpy((unsigned char*)ah->arp_dha, (unsigned char*)ah->arp_sha, 6);
-		memcpy((unsigned char*)ah->arp_dpa, (unsigned char*)ah->arp_spa, 4);
-		memcpy((unsigned char*)ah->arp_sha, (unsigned char*)&my_eth_addr, 6);
-		memcpy((unsigned char*)ah->arp_spa, (unsigned char*)&my_ip, 4);
+		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
+		memcpy((unsigned char*)&ah->arp_data.arp_sha, (unsigned char*)&my_eth_addr, 6);
+		ah->arp_data.arp_tip = ah->arp_data.arp_sip;
+		ah->arp_data.arp_sip = my_ip;
 #ifdef DEBUGARP
 		printf("I will reply following \n");
 		dump_arp_packet(eh);
@@ -499,7 +494,7 @@ int process_tcp(struct rte_mbuf *mbuf, struct ethhdr *eh, struct iphdr *iph, int
 #ifdef DEBUGTCP
 		printf("new payload len=%d :%s:\n",ntcp_payload_len, buf);
 #endif
-		uint32 ack_seq = htonl(ntohl(tcph->seq) + tcp_payload_len);
+		uint32_t ack_seq = htonl(ntohl(tcph->seq) + tcp_payload_len);
 		swap_bytes((unsigned char *)&eh->h_source, (unsigned char *)&eh->h_dest, 6);
 		swap_bytes((unsigned char *)&iph->saddr, (unsigned char *)&iph->daddr, 4);
 		swap_bytes((unsigned char *)&tcph->source, (unsigned char *)&tcph->dest, 2);

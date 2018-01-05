@@ -34,7 +34,6 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <inttypes.h>
@@ -69,6 +68,8 @@
 #define DEBUGICMP
 //#define DEBUGTCP
 
+//#define USINGHWCKSUM
+
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {.max_rx_pkt_len = ETHER_MAX_LEN},
 	.txmode = {.mq_mode = ETH_MQ_TX_NONE},
@@ -79,15 +80,15 @@ uint32_t my_ip;			// My IP Address in network order
 uint16_t tcp_port;		// listen tcp port in network order
 int hw_cksum = 0;
 
-int user_init_func(int, char *[]);
+static inline int user_init_func(int, char *[]);
 
-char *INET_NTOA(uint32_t ip);
-void swap_bytes(unsigned char *a, unsigned char *b, int len);
-void dump_packet(unsigned char *buf, int len);
-void dump_arp_packet(struct ether_hdr *eh);
-int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh);
+static inline char *INET_NTOA(uint32_t ip);
+static inline void swap_bytes(unsigned char *a, unsigned char *b, int len);
+static inline void dump_packet(unsigned char *buf, int len);
+static inline void dump_arp_packet(struct ether_hdr *eh);
+static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len);
 
-char *INET_NTOA(uint32_t ip)	// ip in network order
+static inline char *INET_NTOA(uint32_t ip)	// ip in network order
 {
 	static char buf[100];
 	sprintf(buf, "%d.%d.%d.%d", (int)(ip & 0xff), (int)((ip >> 8) & 0xff),
@@ -95,7 +96,7 @@ char *INET_NTOA(uint32_t ip)	// ip in network order
 	return buf;
 }
 
-void swap_bytes(unsigned char *a, unsigned char *b, int len)
+static inline void swap_bytes(unsigned char *a, unsigned char *b, int len)
 {
 	unsigned char t;
 	int i;
@@ -152,11 +153,13 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		printf("TX IPv4 checksum: support\n");
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
 		printf("TX TCP  checksum: support\n");
+#ifdef USINGHWCKSUM
 	if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
 	    && (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
 		printf("TX IPv4/TCP checksum both supported, so I will use hardware checksum\n");
 		hw_cksum = 1;
 	} else
+#endif
 		printf("I will not use hardware checksum\n");
 
 	/* Dsiable features that are not supported by port's HW */
@@ -192,7 +195,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	return 0;
 }
 
-void dump_packet(unsigned char *buf, int len)
+static inline void dump_packet(unsigned char *buf, int len)
 {
 	printf("+++++++++++++++++++++++++++++++++++++++\n");
 	printf("packet buf=%p len=%d\n", buf, len);
@@ -220,7 +223,7 @@ void dump_packet(unsigned char *buf, int len)
 	}
 }
 
-void dump_arp_packet(struct ether_hdr *eh)
+static inline void dump_arp_packet(struct ether_hdr *eh)
 {
 	struct arp_hdr *ah;
 	ah = (struct arp_hdr *)((unsigned char *)eh + 14);
@@ -256,12 +259,18 @@ void dump_arp_packet(struct ether_hdr *eh)
 	       ((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[3]));
 }
 
-int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh)
+static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len)
 {
 	struct arp_hdr *ah = (struct arp_hdr *)((unsigned char *)eh + 14);
 #ifdef DEBUGARP
 	dump_arp_packet(eh);
 #endif
+	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct arp_hdr))) {
+#ifdef DEBUGICMP
+		printf("len = %d is too small for arp packet??\n", len);
+#endif
+		return 0;
+	}
 	if (htons(ah->arp_op) != ARP_OP_REQUEST) {	// ARP request
 		return 0;
 	}
@@ -286,37 +295,22 @@ int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh)
 	return 0;
 }
 
-unsigned short packet_chksum(unsigned short *addr, int len);
-int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph, int ipv4_hdrlen,
-		 int len);
+static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			       int ipv4_hdrlen, int len);
 
-unsigned short packet_chksum(unsigned short *addr, int len)
-{
-	int nleft = len;
-	int sum = 0;
-	unsigned short *w = addr;
-	unsigned short answer = 0;
-	while (nleft > 1) {
-		sum += *w++;
-		nleft -= 2;
-	}
-	if (nleft == 1) {
-		*(unsigned char *)(&answer) = *(unsigned char *)w;
-		sum += answer;
-	}
-	sum = (sum >> 16) + (sum & 0xffff);
-	sum += (sum >> 16);
-	answer = ~sum;
-	return answer;
-}
-
-int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph, int ipv4_hdrlen,
-		 int len)
+static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			       int ipv4_hdrlen, int len)
 {
 	struct icmp_hdr *icmph = (struct icmp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
 #endif
+	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct icmp_hdr))) {
+#ifdef DEBUGICMP
+		printf("len = %d is too small for icmp packet??\n", len);
+#endif
+		return 0;
+	}
 	if ((icmph->icmp_type == IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code == 0)) {	// ICMP echo req
 		memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
 		memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
@@ -324,7 +318,7 @@ int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *i
 		iph->src_addr = my_ip;
 		icmph->icmp_type = IP_ICMP_ECHO_REPLY;
 		icmph->icmp_cksum = 0;
-		icmph->icmp_cksum = packet_chksum((unsigned short *)icmph, len - 14 - ipv4_hdrlen);
+		icmph->icmp_cksum = rte_raw_cksum(icmph, len - 14 - ipv4_hdrlen);
 #ifdef DEBUGICMP
 		printf("I will send reply\n");
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
@@ -383,21 +377,22 @@ static void set_tcp_checksum(struct ipv4_hdr *ip)
 {
 	struct tcp_hdr *tcph = (struct tcp_hdr *)((u_int8_t *) ip + ((ip->version_ihl & 0xf) << 2));
 	tcph->cksum = 0;	/* Checksum field has to be set to 0 before checksumming */
-	tcph->cksum =
-	    (u_int16_t)
+	tcph->cksum = (u_int16_t)
 	    tcp_sum_calc((u_int16_t) (ntohs(ip->total_length) - (ip->version_ihl & 0xf) * 4),
 			 (u_int16_t *) & ip->src_addr, (u_int16_t *) & ip->dst_addr,
 			 (u_int16_t *) tcph);
 	ip->hdr_checksum = 0;
-	ip->hdr_checksum = packet_chksum((unsigned short *)ip, (ip->version_ihl & 0xf) << 2);
+	ip->hdr_checksum = rte_ipv4_cksum(ip);
 }
 
-int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp, int *resp_len,
-		 int *resp_in_req);
+static inline int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp,
+			       int *resp_len, int *resp_in_req);
 
-int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph, int ipv4_hdrlen);
+static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			      int ipv4_hdrlen, int len);
 
-int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph, int ipv4_hdrlen)
+static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			      int ipv4_hdrlen, int len)
 {
 	struct tcp_hdr *tcph = (struct tcp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
 	int pkt_len;
@@ -405,6 +400,12 @@ int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *ip
 	printf("TCP packet, dport=%d\n", ntohs(tcph->dst_port));
 	printf("TCP flags=%d\n", tcph->tcp_flags);
 #endif
+	if (len < (int)(sizeof(struct ether_hdr) + ipv4_hdrlen + sizeof(struct tcp_hdr))) {
+#ifdef DEBUGICMP
+		printf("len = %d is too small for tcp packet??\n", len);
+#endif
+		return 0;
+	}
 	if (tcph->dst_port != tcp_port)
 		return 0;
 
@@ -606,7 +607,7 @@ void lcore_main(void)
 					printf("yes ipv4\n");
 #endif
 					if (iph->next_proto_id == 6) {	// TCP
-						if (process_tcp(bufs[i], eh, iph, ipv4_hdrlen))
+						if (process_tcp(bufs[i], eh, iph, ipv4_hdrlen, len))
 							continue;
 					} else if (iph->next_proto_id == 1) {	// ICMP
 						if (process_icmp
@@ -615,7 +616,7 @@ void lcore_main(void)
 					}
 				}
 			} else if (eh->ether_type == htons(ETHER_TYPE_ARP)) {	// ARP protocol
-				if (process_arp(bufs[i], eh))
+				if (process_arp(bufs[i], eh, len))
 					continue;
 			}
 			rte_pktmbuf_free(bufs[i]);

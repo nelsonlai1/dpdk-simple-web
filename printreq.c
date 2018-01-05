@@ -1,6 +1,7 @@
 #include "simple-web-server.c"
 
-int user_init_func(int argc __attribute__ ((unused)), char *argv[] __attribute__ ((unused)))
+static inline int user_init_func(int argc __attribute__ ((unused)), char *argv[]
+				 __attribute__ ((unused)))
 {
 	printf("user_init_func: argc=%d\n", argc);
 	return 0;
@@ -8,9 +9,9 @@ int user_init_func(int argc __attribute__ ((unused)), char *argv[] __attribute__
 
 // #define DEBUGHTTP
 
-int process_http(unsigned char *http_req __attribute__ ((unused)), int req_len
-		 __attribute__ ((unused)), unsigned char *http_resp, int *resp_len,
-		 int *resp_in_req)
+static inline int process_http(unsigned char *http_req __attribute__ ((unused)), int req_len
+			       __attribute__ ((unused)), unsigned char *http_resp, int *resp_len,
+			       int *resp_in_req)
 {
 #ifdef DEBUGHTTP
 	printf("http req payload is: ");

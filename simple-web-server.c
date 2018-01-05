@@ -35,7 +35,6 @@
  */
 
 #include <stdint.h>
-#include <arpa/inet.h>
 #include <inttypes.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -81,7 +80,6 @@ uint16_t tcp_port;		// listen tcp port in network order
 int hw_cksum = 0;
 
 static inline int user_init_func(int, char *[]);
-
 static inline char *INET_NTOA(uint32_t ip);
 static inline void swap_bytes(unsigned char *a, unsigned char *b, int len);
 static inline void dump_packet(unsigned char *buf, int len);
@@ -277,18 +275,18 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 #endif
 		return 0;
 	}
-	if (htons(ah->arp_op) != ARP_OP_REQUEST) {	// ARP request
+	if (rte_cpu_to_be_16(ah->arp_op) != ARP_OP_REQUEST) {	// ARP request
 		return 0;
 	}
 	if (my_ip == ah->arp_data.arp_tip) {
 #ifdef DEBUGARP
 		printf("ARP asking me....\n");
 #endif
-		memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
-		memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
-		ah->arp_op = htons(ARP_OP_REPLY);
+		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
+		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
+		ah->arp_op = rte_cpu_to_be_16(ARP_OP_REPLY);
 		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
-		memcpy((unsigned char *)&ah->arp_data.arp_sha, (unsigned char *)&my_eth_addr, 6);
+		rte_memcpy((unsigned char *)&ah->arp_data.arp_sha, (unsigned char *)&my_eth_addr, 6);
 		ah->arp_data.arp_tip = ah->arp_data.arp_sip;
 		ah->arp_data.arp_sip = my_ip;
 #ifdef DEBUGARP
@@ -315,8 +313,8 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 		return 0;
 	}
 	if ((icmph->icmp_type == IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code == 0)) {	// ICMP echo req
-		memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
-		memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
+		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
+		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
 		iph->dst_addr = iph->src_addr;
 		iph->src_addr = my_ip;
 		icmph->icmp_type = IP_ICMP_ECHO_REPLY;
@@ -340,7 +338,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 	struct tcp_hdr *tcph = (struct tcp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
 	int pkt_len;
 #ifdef DEBUGTCP
-	printf("TCP packet, dport=%d\n", ntohs(tcph->dst_port));
+	printf("TCP packet, dport=%d\n", rte_be_to_cpu_16(tcph->dst_port));
 	printf("TCP flags=%d\n", tcph->tcp_flags);
 #endif
 	if (len < (int)(sizeof(struct ether_hdr) + ipv4_hdrlen + sizeof(struct tcp_hdr))) {
@@ -360,11 +358,11 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
-		tcph->recv_ack = htonl(ntohl(tcph->sent_seq) + 1);
-		tcph->sent_seq = htonl(1);
+		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
+		tcph->sent_seq = rte_cpu_to_be_32(1);
 		tcph->data_off = 5 << 4;
 		pkt_len = ipv4_hdrlen + 20;
-		iph->total_length = htons(pkt_len);
+		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
 		if (hw_cksum) {
@@ -402,10 +400,10 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
 		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
 		tcph->tcp_flags = TCP_ACK;
-		tcph->recv_ack = htonl(ntohl(tcph->recv_ack) + 1);
+		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
 		tcph->data_off = 5 << 4;
 		pkt_len = ipv4_hdrlen + 20;
-		iph->total_length = htons(pkt_len);
+		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
 		if (hw_cksum) {
@@ -435,7 +433,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #endif
 		return 0;
 	} else if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
-		pkt_len = ntohs(iph->total_length);
+		pkt_len = rte_be_to_cpu_16(iph->total_length);
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = TCPMSS;
 		unsigned char *tcp_payload;
@@ -460,14 +458,15 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #ifdef DEBUGTCP
 		printf("new payload len=%d :%s:\n", ntcp_payload_len, buf);
 #endif
-		uint32_t ack_seq = htonl(ntohl(tcph->sent_seq) + tcp_payload_len);
+		uint32_t ack_seq =
+		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
 		if (!resp_in_req)
-			memcpy(tcp_payload, buf, ntcp_payload_len);
+			rte_memcpy(tcp_payload, buf, ntcp_payload_len);
 		pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
-		iph->total_length = htons(pkt_len);
+		iph->total_length = rte_cpu_to_be_16(pkt_len);
 #ifdef DEBUGTCP
 		fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
@@ -545,19 +544,19 @@ void lcore_main(void)
 			struct ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct ether_hdr *);
 #ifdef DEBUGPACKET
 			dump_packet((unsigned char *)eh, len);
-			printf("ethernet proto=%4X\n", htons(eh->h_proto));
+			printf("ethernet proto=%4X\n", rte_cpu_to_be_16(eh->h_proto));
 #endif
-			if (eh->ether_type == htons(ETHER_TYPE_IPv4)) {	// IPv4 protocol
+			if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {	// IPv4 protocol
 				struct ipv4_hdr *iph;
 				iph = (struct ipv4_hdr *)((unsigned char *)(eh) + 14);
 				int ipv4_hdrlen = (iph->version_ihl & 0xF) << 2;
 #ifdef DEBUGPACKET
 				printf("ver=%d, frag_off=%d, daddr=%s pro=%d\n",
 				       (iph->version_ihl & 0xF0) >> 4,
-				       ntohs(iph->fragment_offset) & 0x1FFF,
+				       rte_be_to_cpu_16(iph->fragment_offset) & 0x1FFF,
 				       INET_NTOA(iph->dst_addr), iph->next_proto_id);
 #endif
-				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & htons(0x1FFF)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
+				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(0x1FFF)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
 #ifdef DEBUGPACKET
 					printf("yes ipv4\n");
 #endif
@@ -570,7 +569,7 @@ void lcore_main(void)
 							continue;
 					}
 				}
-			} else if (eh->ether_type == htons(ETHER_TYPE_ARP)) {	// ARP protocol
+			} else if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_ARP)) {	// ARP protocol
 				if (process_arp(bufs[i], eh, len))
 					continue;
 			}
@@ -599,11 +598,13 @@ int main(int argc, char *argv[])
 	if (argc < 3)
 		rte_exit(EXIT_FAILURE, "You need tell me my IP and port\n");
 
-	my_ip = inet_addr(argv[1]);
+	int a, b, c, d;
+	sscanf(argv[1], "%d.%d.%d.%d", &a, &b, &c, &d);
+	my_ip = rte_cpu_to_be_32(IPv4(a, b, c, d));
 
-	tcp_port = htons(atoi(argv[2]));
+	tcp_port = rte_cpu_to_be_16(atoi(argv[2]));
 
-	printf("My IP is: %s, port is %d\n", INET_NTOA(my_ip), ntohs(tcp_port));
+	printf("My IP is: %s, port is %d\n", INET_NTOA(my_ip), rte_be_to_cpu_16(tcp_port));
 
 	argc -= 2;
 	argv += 2;

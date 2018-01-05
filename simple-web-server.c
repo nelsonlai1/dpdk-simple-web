@@ -77,7 +77,7 @@ static const struct rte_eth_conf port_conf_default = {
 struct ether_addr my_eth_addr;	// My ethernet address
 uint32_t my_ip;			// My IP Address in network order
 uint16_t tcp_port;		// listen tcp port in network order
-int hw_cksum = 0;
+int hardware_cksum = 0;
 
 static inline int user_init_func(int, char *[]);
 static inline char *INET_NTOA(uint32_t ip);
@@ -161,7 +161,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
 	    && (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
 		printf("TX IPv4/TCP checksum both supported, so I will use hardware checksum\n");
-		hw_cksum = 1;
+		hardware_cksum = 1;
 	} else
 #endif
 		printf("I will not use hardware checksum\n");
@@ -230,7 +230,7 @@ static inline void dump_packet(unsigned char *buf, int len)
 static inline void dump_arp_packet(struct ether_hdr *eh)
 {
 	struct arp_hdr *ah;
-	ah = (struct arp_hdr *)((unsigned char *)eh + 14);
+	ah = (struct arp_hdr *)((unsigned char *)eh + ETHER_HDR_LEN);
 	printf("+++++++++++++++++++++++++++++++++++++++\n");
 	printf("ARP PACKET: %p \n", eh);
 	printf("ETHER DST MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -265,7 +265,7 @@ static inline void dump_arp_packet(struct ether_hdr *eh)
 
 static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len)
 {
-	struct arp_hdr *ah = (struct arp_hdr *)((unsigned char *)eh + 14);
+	struct arp_hdr *ah = (struct arp_hdr *)((unsigned char *)eh + ETHER_HDR_LEN);
 #ifdef DEBUGARP
 	dump_arp_packet(eh);
 #endif
@@ -286,7 +286,8 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
 		ah->arp_op = rte_cpu_to_be_16(ARP_OP_REPLY);
 		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
-		rte_memcpy((unsigned char *)&ah->arp_data.arp_sha, (unsigned char *)&my_eth_addr, 6);
+		rte_memcpy((unsigned char *)&ah->arp_data.arp_sha, (unsigned char *)&my_eth_addr,
+			   6);
 		ah->arp_data.arp_tip = ah->arp_data.arp_sip;
 		ah->arp_data.arp_sip = my_ip;
 #ifdef DEBUGARP
@@ -319,7 +320,7 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 		iph->src_addr = my_ip;
 		icmph->icmp_type = IP_ICMP_ECHO_REPLY;
 		icmph->icmp_cksum = 0;
-		icmph->icmp_cksum = rte_raw_cksum(icmph, len - 14 - ipv4_hdrlen);
+		icmph->icmp_cksum = rte_raw_cksum(icmph, len - ETHER_HDR_LEN - ipv4_hdrlen);
 #ifdef DEBUGICMP
 		printf("I will send reply\n");
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
@@ -360,24 +361,21 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
 		tcph->sent_seq = rte_cpu_to_be_32(1);
-		tcph->data_off = 5 << 4;
-		pkt_len = ipv4_hdrlen + 20;
+		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
-		if (hw_cksum) {
+		tcph->cksum = 0;
+		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = 14;
+			mbuf->l2_len = ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			iph->hdr_checksum = 0;
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else {
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
-			iph->hdr_checksum = 0;
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
 		}
 #ifdef DEBUGTCP
@@ -401,24 +399,21 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
-		tcph->data_off = 5 << 4;
-		pkt_len = ipv4_hdrlen + 20;
+		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
-		if (hw_cksum) {
+		tcph->cksum = 0;
+		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = 14;
+			mbuf->l2_len = ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			iph->hdr_checksum = 0;
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else {
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
-			iph->hdr_checksum = 0;
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
 		}
 #ifdef DEBUGTCP
@@ -474,20 +469,17 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		tcph->sent_seq = tcph->recv_ack;
 		tcph->recv_ack = ack_seq;
 		iph->hdr_checksum = 0;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + 14;
-		if (hw_cksum) {
+		tcph->cksum = 0;
+		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = 14;
+			mbuf->l2_len = ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = ntcp_payload_len;
-			iph->hdr_checksum = 0;
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
 		} else {
-			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
-			iph->hdr_checksum = 0;
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
 		}
 #ifdef DEBUGTCP
@@ -548,7 +540,7 @@ void lcore_main(void)
 #endif
 			if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {	// IPv4 protocol
 				struct ipv4_hdr *iph;
-				iph = (struct ipv4_hdr *)((unsigned char *)(eh) + 14);
+				iph = (struct ipv4_hdr *)((unsigned char *)(eh) + ETHER_HDR_LEN);
 				int ipv4_hdrlen = (iph->version_ihl & 0xF) << 2;
 #ifdef DEBUGPACKET
 				printf("ver=%d, frag_off=%d, daddr=%s pro=%d\n",

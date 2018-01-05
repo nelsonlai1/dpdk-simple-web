@@ -68,7 +68,7 @@
 #define DEBUGICMP
 //#define DEBUGTCP
 
-//#define USINGHWCKSUM
+// #define USINGHWCKSUM
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {.max_rx_pkt_len = ETHER_MAX_LEN},
@@ -87,6 +87,12 @@ static inline void swap_bytes(unsigned char *a, unsigned char *b, int len);
 static inline void dump_packet(unsigned char *buf, int len);
 static inline void dump_arp_packet(struct ether_hdr *eh);
 static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len);
+static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			       int ipv4_hdrlen, int len);
+static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+			      int ipv4_hdrlen, int len);
+static inline int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp,
+			       int *resp_len, int *resp_in_req);
 
 static inline char *INET_NTOA(uint32_t ip)	// ip in network order
 {
@@ -296,9 +302,6 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 }
 
 static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
-			       int ipv4_hdrlen, int len);
-
-static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
 			       int ipv4_hdrlen, int len)
 {
 	struct icmp_hdr *icmph = (struct icmp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
@@ -330,66 +333,6 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 	}
 	return 0;
 }
-
-u_int16_t tcp_sum_calc(u_int16_t len_tcp, u_int16_t src_addr[], u_int16_t dest_addr[],
-		       u_int16_t buff[]);
-
-// function from http://www.bloof.de/tcp_checksumming, thanks to crunsh
-u_int16_t tcp_sum_calc(u_int16_t len_tcp, u_int16_t src_addr[], u_int16_t dest_addr[],
-		       u_int16_t buff[])
-{
-	u_int16_t prot_tcp = 6;
-	u_int32_t sum = 0;
-	int nleft = len_tcp;
-	u_int16_t *w = buff;
-
-	/* calculate the checksum for the tcp header and payload */
-	while (nleft > 1) {
-		sum += *w++;
-		nleft -= 2;
-	}
-
-	/* if nleft is 1 there ist still on byte left. We add a padding byte (0xFF) to build a 16bit word */
-	if (nleft > 0)
-		sum += *w & ntohs(0xFF00);	/* Thanks to Dalton */
-
-	/* add the pseudo header */
-	sum += src_addr[0];
-	sum += src_addr[1];
-	sum += dest_addr[0];
-	sum += dest_addr[1];
-	sum += htons(len_tcp);
-	sum += htons(prot_tcp);
-
-	// keep only the last 16 bits of the 32 bit calculated sum and add the carries
-	sum = (sum >> 16) + (sum & 0xFFFF);
-	sum += (sum >> 16);
-
-	// Take the one's complement of sum
-	sum = ~sum;
-
-	return ((u_int16_t) sum);
-}
-
-static void set_tcp_checksum(struct ipv4_hdr *ip);
-
-static void set_tcp_checksum(struct ipv4_hdr *ip)
-{
-	struct tcp_hdr *tcph = (struct tcp_hdr *)((u_int8_t *) ip + ((ip->version_ihl & 0xf) << 2));
-	tcph->cksum = 0;	/* Checksum field has to be set to 0 before checksumming */
-	tcph->cksum = (u_int16_t)
-	    tcp_sum_calc((u_int16_t) (ntohs(ip->total_length) - (ip->version_ihl & 0xf) * 4),
-			 (u_int16_t *) & ip->src_addr, (u_int16_t *) & ip->dst_addr,
-			 (u_int16_t *) tcph);
-	ip->hdr_checksum = 0;
-	ip->hdr_checksum = rte_ipv4_cksum(ip);
-}
-
-static inline int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp,
-			       int *resp_len, int *resp_in_req);
-
-static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
-			      int ipv4_hdrlen, int len);
 
 static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len)
@@ -433,8 +376,12 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			iph->hdr_checksum = 0;
 			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
-		} else
-			set_tcp_checksum(iph);
+		} else {
+			tcph->cksum = 0;
+			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+			iph->hdr_checksum = 0;
+			iph->hdr_checksum = rte_ipv4_cksum(iph);
+		}
 #ifdef DEBUGTCP
 		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
@@ -470,8 +417,12 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			iph->hdr_checksum = 0;
 			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
-		} else
-			set_tcp_checksum(iph);
+		} else {
+			tcph->cksum = 0;
+			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+			iph->hdr_checksum = 0;
+			iph->hdr_checksum = rte_ipv4_cksum(iph);
+		}
 #ifdef DEBUGTCP
 		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
@@ -534,8 +485,12 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			iph->hdr_checksum = 0;
 			tcph->cksum = 0;
 			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
-		} else
-			set_tcp_checksum(iph);
+		} else {
+			tcph->cksum = 0;
+			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+			iph->hdr_checksum = 0;
+			iph->hdr_checksum = rte_ipv4_cksum(iph);
+		}
 #ifdef DEBUGTCP
 		printf("I will reply following:\n");
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));

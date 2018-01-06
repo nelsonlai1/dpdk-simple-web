@@ -89,8 +89,9 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 			       int ipv4_hdrlen, int len);
 static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len);
-static inline int process_http(unsigned char *http_req, int req_len, unsigned char *http_resp,
-			       int *resp_len, int *resp_in_req);
+static inline int process_http(struct ipv4_hdr *iph, struct tcp_hdr *tcph, unsigned char *http_req,
+			       int req_len, unsigned char *http_resp, int *resp_len,
+			       int *resp_in_req);
 
 static inline char *INET_NTOA(uint32_t ip)	// ip in network order
 {
@@ -447,7 +448,8 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			return 0;
 		}
 		tcp_payload = (unsigned char *)iph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
-		if (process_http(tcp_payload, tcp_payload_len, buf, &ntcp_payload_len, &resp_in_req)
+		if (process_http
+		    (iph, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len, &resp_in_req)
 		    == 0)
 			return 0;
 #ifdef DEBUGTCP

@@ -63,8 +63,10 @@
 #define TCP_PSH 0x08
 #define TCP_ACK 0x10
 
-#define DEBUGARP
-#define DEBUGICMP
+#define TTL 64
+
+//#define DEBUGARP
+//#define DEBUGICMP
 //#define DEBUGTCP
 
 // #define USINGHWCKSUM
@@ -319,9 +321,12 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
 		iph->dst_addr = iph->src_addr;
 		iph->src_addr = my_ip;
+		iph->time_to_live = TTL;
+		iph->hdr_checksum = 0;
+		iph->hdr_checksum = rte_ipv4_cksum(iph);
 		icmph->icmp_type = IP_ICMP_ECHO_REPLY;
 		icmph->icmp_cksum = 0;
-		icmph->icmp_cksum = rte_raw_cksum(icmph, len - ETHER_HDR_LEN - ipv4_hdrlen);
+		icmph->icmp_cksum = ~rte_raw_cksum(icmph, len - ETHER_HDR_LEN - ipv4_hdrlen);
 #ifdef DEBUGICMP
 		printf("I will send reply\n");
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
@@ -363,10 +368,11 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
 		tcph->sent_seq = rte_cpu_to_be_32(1);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->cksum = 0;
 		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
-		tcph->cksum = 0;
+		iph->time_to_live = TTL;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
@@ -401,10 +407,11 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->cksum = 0;
 		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
-		tcph->cksum = 0;
+		iph->time_to_live = TTL;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
@@ -470,8 +477,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		tcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
 		tcph->sent_seq = tcph->recv_ack;
 		tcph->recv_ack = ack_seq;
-		iph->hdr_checksum = 0;
 		tcph->cksum = 0;
+		iph->hdr_checksum = 0;
+		iph->time_to_live = TTL;
 		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);

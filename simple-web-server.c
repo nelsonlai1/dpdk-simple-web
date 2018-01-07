@@ -551,14 +551,14 @@ void lcore_main(void)
 			if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {	// IPv4 protocol
 				struct ipv4_hdr *iph;
 				iph = (struct ipv4_hdr *)((unsigned char *)(eh) + ETHER_HDR_LEN);
-				int ipv4_hdrlen = (iph->version_ihl & 0xF) << 2;
+				int ipv4_hdrlen = (iph->version_ihl & IPV4_HDR_IHL_MASK) << 2;
 #ifdef DEBUGPACKET
 				printf("ver=%d, frag_off=%d, daddr=%s pro=%d\n",
 				       (iph->version_ihl & 0xF0) >> 4,
-				       rte_be_to_cpu_16(iph->fragment_offset) & 0x1FFF,
+				       rte_be_to_cpu_16(iph->fragment_offset) & IPV4_HDR_OFFSET_MASK,
 				       INET_NTOA(iph->dst_addr), iph->next_proto_id);
 #endif
-				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(0x1FFF)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
+				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(IPV4_HDR_OFFSET_MASK)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
 #ifdef DEBUGPACKET
 					printf("yes ipv4\n");
 #endif

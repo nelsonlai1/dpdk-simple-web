@@ -623,7 +623,6 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
 		payload_len = sizeof(struct tcp_hdr);
-		printf("payload_len = %d\n", payload_len);
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;

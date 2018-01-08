@@ -9,7 +9,8 @@ static inline int user_init_func(int argc __attribute__ ((unused)), char *argv[]
 
 // #define DEBUGHTTP
 
-static inline int process_http(struct ipv4_hdr *iph __attribute__ ((unused)), struct tcp_hdr *tcph
+static inline int process_http(int ip_version __attribute__ ((unused)),
+			       void *iph __attribute__ ((unused)), struct tcp_hdr *tcph
 			       __attribute__ ((unused)), unsigned char *http_req
 			       __attribute__ ((unused)), int req_len
 			       __attribute__ ((unused)), unsigned char *http_resp, int *resp_len,

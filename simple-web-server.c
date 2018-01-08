@@ -1,6 +1,8 @@
 /* simple-web-server: Simple WEB Server using DPDK
    james@ustc.edu.cn 2018.01.03
+
 */
+
 /*-
  *   BSD LICENSE
  *
@@ -35,6 +37,7 @@
  */
 
 #include <stdint.h>
+#include <arpa/inet.h>
 #include <inttypes.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -65,11 +68,12 @@
 
 #define TTL 64
 
+//#define DEBUGPACKET
 //#define DEBUGARP
 //#define DEBUGICMP
 //#define DEBUGTCP
 
-// #define USINGHWCKSUM
+#define USINGHWCKSUM
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {.max_rx_pkt_len = ETHER_MAX_LEN},
@@ -78,8 +82,12 @@ static const struct rte_eth_conf port_conf_default = {
 
 struct ether_addr my_eth_addr;	// My ethernet address
 uint32_t my_ip;			// My IP Address in network order
+uint8_t my_ipv6[16];		// My IPv6 Address in network order
+uint8_t my_ipv6_m[16];		// My node multicast address
 uint16_t tcp_port;		// listen tcp port in network order
 int hardware_cksum = 0;
+int hardware_cksum_v6 = 0;
+int has_ipv6 = 0;
 
 static inline int user_init_func(int, char *[]);
 static inline char *INET_NTOA(uint32_t ip);
@@ -91,9 +99,9 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 			       int ipv4_hdrlen, int len);
 static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len);
-static inline int process_http(struct ipv4_hdr *iph, struct tcp_hdr *tcph, unsigned char *http_req,
-			       int req_len, unsigned char *http_resp, int *resp_len,
-			       int *resp_in_req);
+static inline int process_http(int ip_version, void *iph, struct tcp_hdr *tcph,
+			       unsigned char *http_req, int req_len, unsigned char *http_resp,
+			       int *resp_len, int *resp_in_req);
 
 static inline char *INET_NTOA(uint32_t ip)	// ip in network order
 {
@@ -156,6 +164,10 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		printf("RX IPv4 checksum: support\n");
 	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM)
 		printf("RX TCP  checksum: support\n");
+/*
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV6_CKSUM)
+		printf("TX IPv6 checksum: support\n");
+*/
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)
 		printf("TX IPv4 checksum: support\n");
 	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
@@ -199,6 +211,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	// rte_eth_promiscuous_enable(port);
 
+	rte_eth_allmulticast_enable(port);
 	return 0;
 }
 
@@ -339,6 +352,75 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 	return 0;
 }
 
+static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv6_hdr *ip6h,
+				 int len)
+{
+	struct icmp_hdr *icmph =
+	    (struct icmp_hdr *)((unsigned char *)(ip6h) + sizeof(struct ipv6_hdr));
+#ifdef DEBUGICMP
+	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
+#endif
+	if (len <
+	    (int)(sizeof(struct ether_hdr) + sizeof(struct ipv6_hdr) + sizeof(struct icmp_hdr))) {
+#ifdef DEBUGICMP
+		printf("len = %d is too small for icmp packet??\n", len);
+#endif
+		return 0;
+	}
+	if ((icmph->icmp_type == 135) && (icmph->icmp_code == 0)) {	// ICMPv NS
+		printf("ICMPv6 NS\n");
+		if (memcmp((unsigned char *)icmph + 8, my_ipv6, 16) != 0) {	// target is not me
+#ifdef DEBUGICMP
+			printf("it's not to me\n");
+			int i = 0;
+			for (i = 0; i < 16; i++)
+				printf("%02X ", *((unsigned char *)icmph + 8 + i));
+			printf("\n");
+#endif
+			return 0;
+		}
+		*((unsigned char *)icmph + 4) = 0x60;	// ??? O+S bit
+		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
+		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
+		rte_memcpy((unsigned char *)&ip6h->dst_addr, (unsigned char *)&ip6h->src_addr, 16);
+		rte_memcpy((unsigned char *)&ip6h->src_addr, (unsigned char *)&my_ipv6, 16);
+		ip6h->hop_limits = 255;
+		icmph->icmp_type = 136;
+		icmph->icmp_cksum = 0;
+		*((unsigned char *)icmph + 24) = 2;	// dest-link options
+		rte_memcpy((unsigned char *)icmph + 26, (unsigned char *)&my_eth_addr, 6);
+		icmph->icmp_cksum = rte_ipv6_udptcp_cksum(ip6h, icmph);
+#ifdef DEBUGICMP
+		printf("I will send reply\n");
+		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
+#endif
+		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+		if (ret == 1)
+			return 1;
+		printf("send icmpv6 packet ret = %d\n", ret);
+
+	} else if ((icmph->icmp_type == 128) && (icmph->icmp_code == 0)) {	// ICMPv6 echo req
+		if (memcmp(ip6h->dst_addr, my_ipv6, 16) != 0)	// not to me
+			return 0;
+		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
+		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
+		swap_bytes(ip6h->src_addr, ip6h->dst_addr, 16);
+		ip6h->hop_limits = 255;
+		icmph->icmp_type = 129;
+		icmph->icmp_cksum = 0;
+		icmph->icmp_cksum = rte_ipv6_udptcp_cksum(ip6h, icmph);
+#ifdef DEBUGICMP
+		printf("I will send reply\n");
+		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
+#endif
+		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+		if (ret == 1)
+			return 1;
+		printf("send icmpv6 packet ret = %d\n", ret);
+	}
+	return 0;
+}
+
 static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len)
 {
@@ -456,7 +538,8 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		}
 		tcp_payload = (unsigned char *)iph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 		if (process_http
-		    (iph, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len, &resp_in_req)
+		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len,
+		     &resp_in_req)
 		    == 0)
 			return 0;
 #ifdef DEBUGTCP
@@ -491,6 +574,171 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		} else {
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
+		}
+#ifdef DEBUGTCP
+		printf("I will reply following:\n");
+		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
+#endif
+		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+		if (ret == 1)
+			return 1;
+#ifdef DEBUGTCP
+		fprintf(stderr, "send tcp packet return %d\n", ret);
+#endif
+		return 0;
+	}
+	return 0;
+}
+
+static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv6_hdr *ip6h,
+				int len)
+{
+	struct tcp_hdr *tcph =
+	    (struct tcp_hdr *)((unsigned char *)(ip6h) + sizeof(struct ipv6_hdr));
+	int payload_len;
+#ifdef DEBUGTCP
+	printf("TCP packet, dport=%d\n", rte_be_to_cpu_16(tcph->dst_port));
+	printf("TCP flags=%d\n", tcph->tcp_flags);
+#endif
+	if (len <
+	    (int)(sizeof(struct ether_hdr) + sizeof(struct ipv6_hdr) + sizeof(struct tcp_hdr))) {
+#ifdef DEBUGICMP
+		printf("len = %d is too small for tcp packet??\n", len);
+#endif
+		return 0;
+	}
+	if (tcph->dst_port != tcp_port)
+		return 0;
+
+	if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_SYN) {	// SYN packet, send SYN+ACK
+#ifdef DEBUGTCP
+		printf("SYN packet\n");
+#endif
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
+		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		tcph->tcp_flags = TCP_ACK | TCP_SYN;
+		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
+		tcph->sent_seq = rte_cpu_to_be_32(1);
+		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->cksum = 0;
+		payload_len = sizeof(struct tcp_hdr);
+		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
+		ip6h->hop_limits = TTL;
+		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		if (hardware_cksum_v6) {	// not tested!!
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->l3_len = sizeof(struct ipv6_hdr);
+			mbuf->l4_len = 0;
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+		} else {
+			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
+		}
+#ifdef DEBUGTCP
+		printf("I will reply following:\n");
+		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
+#endif
+		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+		if (ret == 1)
+			return 1;
+#ifdef DEBUGTCP
+		printf("send tcp packet return %d\n", ret);
+#endif
+		return 0;
+	} else if (tcph->tcp_flags & TCP_FIN) {	// FIN packet, send ACK
+#ifdef DEBUGTCP
+		fprintf(stderr, "FIN packet\n");
+#endif
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
+		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
+		tcph->tcp_flags = TCP_ACK;
+		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
+		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->cksum = 0;
+		payload_len = sizeof(struct tcp_hdr);
+		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
+		ip6h->hop_limits = TTL;
+		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		if (hardware_cksum_v6) {	// not tested!!
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->l3_len = sizeof(struct ipv6_hdr);
+			mbuf->l4_len = 0;
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+		} else {
+			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
+		}
+#ifdef DEBUGTCP
+		printf("I will reply following:\n");
+		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
+#endif
+		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+		if (ret == 1)
+			return 1;
+#ifdef DEBUGTCP
+		fprintf(stderr, "send tcp packet return %d\n", ret);
+#endif
+		return 0;
+	} else if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
+		payload_len = rte_be_to_cpu_16(ip6h->payload_len);
+		int tcp_payload_len = payload_len - (tcph->data_off >> 4) * 4;
+		int ntcp_payload_len = TCPMSS;
+		unsigned char *tcp_payload;
+		unsigned char buf[TCPMSS];	// http_respone
+		int resp_in_req = 0;
+
+#ifdef DEBUGTCP
+		printf("ACK pkt len=%d(inc ether) ip len=%d\n", rte_pktmbuf_data_len(mbuf),
+		       payload_len);
+		printf("tcp payload len=%d\n", tcp_payload_len);
+#endif
+		if (tcp_payload_len <= 5) {
+#ifdef DEBUGTCP
+			printf("tcp payload len=%d too small, ignore\n", tcp_payload_len);
+#endif
+			return 0;
+		}
+		tcp_payload = (unsigned char *)tcph + (tcph->data_off >> 4) * 4;
+		if (process_http
+		    (6, ip6h, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len,
+		     &resp_in_req)
+		    == 0)
+			return 0;
+#ifdef DEBUGTCP
+		printf("new payload len=%d :%s:\n", ntcp_payload_len, buf);
+#endif
+		uint32_t ack_seq =
+		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
+		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
+		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
+		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		if (!resp_in_req)
+			rte_memcpy(tcp_payload, buf, ntcp_payload_len);
+		payload_len = ntcp_payload_len + (tcph->data_off >> 4) * 4;
+		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
+#ifdef DEBUGTCP
+		fprintf(stderr, "new payload len=%d\n", payload_len);
+#endif
+		tcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
+		tcph->sent_seq = tcph->recv_ack;
+		tcph->recv_ack = ack_seq;
+		tcph->cksum = 0;
+		ip6h->hop_limits = TTL;
+		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		if (hardware_cksum_v6) {	// not tested!!
+			// printf("ol_flags=%ld\n",mbuf->ol_flags);
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->l3_len = sizeof(struct ipv6_hdr);
+			mbuf->l4_len = ntcp_payload_len;
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+		} else {
+			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
 		}
 #ifdef DEBUGTCP
 		printf("I will reply following:\n");
@@ -546,7 +794,7 @@ void lcore_main(void)
 			struct ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct ether_hdr *);
 #ifdef DEBUGPACKET
 			dump_packet((unsigned char *)eh, len);
-			printf("ethernet proto=%4X\n", rte_cpu_to_be_16(eh->h_proto));
+			printf("ethernet proto=%4X\n", rte_cpu_to_be_16(eh->ether_type));
 #endif
 			if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {	// IPv4 protocol
 				struct ipv4_hdr *iph;
@@ -555,12 +803,13 @@ void lcore_main(void)
 #ifdef DEBUGPACKET
 				printf("ver=%d, frag_off=%d, daddr=%s pro=%d\n",
 				       (iph->version_ihl & 0xF0) >> 4,
-				       rte_be_to_cpu_16(iph->fragment_offset) & IPV4_HDR_OFFSET_MASK,
-				       INET_NTOA(iph->dst_addr), iph->next_proto_id);
+				       rte_be_to_cpu_16(iph->fragment_offset) &
+				       IPV4_HDR_OFFSET_MASK, INET_NTOA(iph->dst_addr),
+				       iph->next_proto_id);
 #endif
 				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(IPV4_HDR_OFFSET_MASK)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
 #ifdef DEBUGPACKET
-					printf("yes ipv4\n");
+					printf("ipv4 packet\n");
 #endif
 					if (iph->next_proto_id == 6) {	// TCP
 						if (process_tcp(bufs[i], eh, iph, ipv4_hdrlen, len))
@@ -574,6 +823,28 @@ void lcore_main(void)
 			} else if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_ARP)) {	// ARP protocol
 				if (process_arp(bufs[i], eh, len))
 					continue;
+			} else if ((has_ipv6) && (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6))) {	// IPv6 protocol
+				struct ipv6_hdr *ip6h;
+				int ver = 0;
+				ip6h = (struct ipv6_hdr *)((unsigned char *)(eh) + ETHER_HDR_LEN);
+				ver = (ip6h->vtc_flow & 0xF0) >> 4;
+#ifdef DEBUGPACKET
+				char h[100];
+				inet_ntop(AF_INET6, ip6h->dst_addr, h, 100);
+				printf("ver=%d, daddr=%s pro=%X\n", ver, h, ip6h->proto);
+#endif
+				if (ver == 6) {	// ipv6
+#ifdef DEBUGPACKET
+					printf("ipv6 packet\n");
+#endif
+					if (ip6h->proto == 6) {	// TCP
+						if (process_tcpv6(bufs[i], eh, ip6h, len))
+							continue;
+					} else if (ip6h->proto == 0x3a) {	// ICMPv6
+						if (process_icmpv6(bufs[i], eh, ip6h, len))
+							continue;
+					}
+				}
 			}
 			rte_pktmbuf_free(bufs[i]);
 		}
@@ -610,6 +881,24 @@ int main(int argc, char *argv[])
 
 	argc -= 2;
 	argv += 2;
+
+	if ((argc > 2) && (strcmp(argv[1], "--ip6") == 0)) {
+		char t[100];
+		has_ipv6 = 1;
+		if (inet_pton(AF_INET6, argv[2], &my_ipv6) != 1) {
+			printf("%s is not a valid ipv6 address\n", argv[2]);
+			exit(0);
+		}
+		printf("My IPv6 is: %s\n", inet_ntop(AF_INET6, &my_ipv6, t, 100));
+		inet_pton(AF_INET6, "FF02::1:FF00:0000", &my_ipv6_m);
+		my_ipv6_m[13] = my_ipv6[13];
+		my_ipv6_m[14] = my_ipv6[14];
+		my_ipv6_m[15] = my_ipv6[15];
+		printf("My IPv6 node multicast address is: %s\n",
+		       inet_ntop(AF_INET6, &my_ipv6_m, t, 100));
+		argc -= 2;
+		argv += 2;
+	}
 
 	user_init_func(argc, argv);
 

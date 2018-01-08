@@ -175,8 +175,9 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 #ifdef USINGHWCKSUM
 	if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
 	    && (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
-		printf("TX IPv4/TCP checksum both supported, so I will use hardware checksum\n");
+		printf("TX IPv4/TCP checksum both supported, so I will use IPv4/IPv6 hardware checksum\n");
 		hardware_cksum = 1;
+		hardware_cksum_v6 = 1;
 	} else
 #endif
 		printf("I will not use hardware checksum\n");
@@ -368,7 +369,6 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 		return 0;
 	}
 	if ((icmph->icmp_type == 135) && (icmph->icmp_code == 0)) {	// ICMPv NS
-		printf("ICMPv6 NS\n");
 		if (memcmp((unsigned char *)icmph + 8, my_ipv6, 16) != 0) {	// target is not me
 #ifdef DEBUGICMP
 			printf("it's not to me\n");
@@ -626,12 +626,12 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
-		if (hardware_cksum_v6) {	// not tested!!
+		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
-			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = sizeof(struct ether_hdr);
 			mbuf->l3_len = sizeof(struct ipv6_hdr);
-			mbuf->l4_len = 0;
+			mbuf->l4_len = sizeof(struct tcp_hdr);
 			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
 		} else {
 			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
@@ -663,12 +663,12 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
-		if (hardware_cksum_v6) {	// not tested!!
+		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
-			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = sizeof(struct ether_hdr);
 			mbuf->l3_len = sizeof(struct ipv6_hdr);
-			mbuf->l4_len = 0;
+			mbuf->l4_len = sizeof(struct tcp_hdr);
 			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
 		} else {
 			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
@@ -730,12 +730,13 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		tcph->cksum = 0;
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
-		if (hardware_cksum_v6) {	// not tested!!
+		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
-			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
+			mbuf->l2_len = sizeof(struct ether_hdr);
 			mbuf->l3_len = sizeof(struct ipv6_hdr);
-			mbuf->l4_len = ntcp_payload_len;
+			mbuf->l4_len = sizeof(struct tcp_hdr) + ntcp_payload_len;
 			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
 		} else {
 			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);

@@ -18,6 +18,7 @@ HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片�
 * 响应ICMP echo
 * 响应TCP SYN
 * 响应HTTP
+* 响应ICMPv6
 
 我的环境：(Ubuntu 17.10)
 
@@ -73,7 +74,7 @@ source env_vars
 make
 
 #测试运行, 其中192.168.1.2是网卡的IP地址
-build/printreq -c1 -n1 -- 192.168.1.2 80
+build/printreq -c1 -n1 -- 192.168.1.2 80 [ --ip6 x:x:x::y ]
 
 ```
 

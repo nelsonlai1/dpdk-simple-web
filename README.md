@@ -1,3 +1,12 @@
+## high performance simpe web server using DPDK
+
+support IPv4/IPv6.
+
+Do not store tcp status information, so it can support any clients
+
+HTTP request and response must be fit in one ethernet packet.
+
+
 ## 使用DPDK的简单web server
 
 一个极高性能的简单web server，使用DPDK框架，可以用于极高并发但处理逻辑比较简单的环境，比如高考查分/物联网应用。

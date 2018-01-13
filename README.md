@@ -2,9 +2,9 @@
 
 support IPv4/IPv6.
 
-Do not store tcp status information, so it can support any clients
+Doesn't store tcp connection status information, so it can support any number of concurrent clients
 
-HTTP request and response must be fit in one ethernet packet.
+HTTP request and response must fit in one ethernet packet
 
 
 ## 使用DPDK的简单web server

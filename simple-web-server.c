@@ -37,6 +37,7 @@
  */
 
 #include <stdint.h>
+#include <signal.h>
 #include <arpa/inet.h>
 #include <inttypes.h>
 #include <rte_eal.h>
@@ -88,6 +89,54 @@ uint16_t tcp_port;		// listen tcp port in network order
 int hardware_cksum = 0;
 int hardware_cksum_v6 = 0;
 int has_ipv6 = 0;
+
+volatile int got_signal = 0;
+#define STATS_PKTS 100000
+
+uint64_t recv_pkts = 0;
+uint64_t process_pkts = 0;
+uint64_t drop_pkts = 0;
+uint64_t recv_arp_pkts = 0;
+uint64_t send_arp_pkts = 0;
+uint64_t recv_icmp_pkts = 0;
+uint64_t send_icmp_pkts = 0;
+uint64_t recv_tcp_syn_pkts = 0;
+uint64_t recv_tcp_data_pkts = 0;
+uint64_t send_tcp_data_pkts = 0;
+uint64_t recv_tcp_fin_pkts = 0;
+
+uint64_t recv_icmpv6_pkts = 0;
+uint64_t send_icmpv6_pkts = 0;
+uint64_t recv_tcpv6_syn_pkts = 0;
+uint64_t recv_tcpv6_data_pkts = 0;
+uint64_t send_tcpv6_data_pkts = 0;
+uint64_t recv_tcpv6_fin_pkts = 0;
+
+void sig_handler_hup(int signo);
+void sig_handler_hup(int signo __attribute__ ((unused)))
+{
+	got_signal = 1;
+}
+
+void print_stats(void);
+void print_stats(void)
+{
+	printf("%s\n", "--------------------");
+	printf("Ether Packets recevied: %ld processed: %ld dropped: %ld\n",
+	       recv_pkts, process_pkts, drop_pkts);
+	printf("ARP Packets recevied: %ld send: %ld\n", recv_arp_pkts, send_arp_pkts);
+	printf("ICMP Packets recevied: %ld send: %ld\n", recv_icmp_pkts, send_icmp_pkts);
+	printf("TCP Packets SYN: %ld, FIN: %ld, DATA: %ld/%ld\n",
+	       recv_tcp_syn_pkts, recv_tcp_fin_pkts, recv_tcp_data_pkts, send_tcp_data_pkts);
+	if (has_ipv6) {
+		printf("ICMPv6 Packets recevied: %ld send: %ld\n",
+		       recv_icmpv6_pkts, send_icmpv6_pkts);
+		printf("TCPv6 Packets SYN: %ld, FIN: %ld, DATA: %ld/%ld\n",
+		       recv_tcpv6_syn_pkts, recv_tcpv6_fin_pkts,
+		       recv_tcpv6_data_pkts, send_tcpv6_data_pkts);
+	}
+	got_signal = 0;
+}
 
 static inline int user_init_func(int, char *[]);
 static inline char *INET_NTOA(uint32_t ip);
@@ -175,7 +224,8 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 #ifdef USINGHWCKSUM
 	if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)
 	    && (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
-		printf("TX IPv4/TCP checksum both supported, so I will use IPv4/IPv6 hardware checksum\n");
+		printf
+		    ("TX IPv4/TCP checksum both supported, so I will use IPv4/IPv6 hardware checksum\n");
 		hardware_cksum = 1;
 		hardware_cksum_v6 = 1;
 	} else
@@ -286,6 +336,7 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 #ifdef DEBUGARP
 	dump_arp_packet(eh);
 #endif
+	recv_arp_pkts++;
 	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct arp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for arp packet??\n", len);
@@ -311,8 +362,10 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 		printf("I will reply following \n");
 		dump_arp_packet(eh);
 #endif
-		if (likely(1 == rte_eth_tx_burst(0, 0, &mbuf, 1)))
+		if (likely(1 == rte_eth_tx_burst(0, 0, &mbuf, 1))) {
+			send_arp_pkts++;
 			return 1;
+		}
 	}
 	return 0;
 }
@@ -324,6 +377,7 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
 #endif
+	recv_icmp_pkts++;
 	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct icmp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for icmp packet??\n", len);
@@ -346,8 +400,10 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1)
+		if (ret == 1) {
+			send_icmp_pkts++;
 			return 1;
+		}
 		printf("send icmp packet ret = %d\n", ret);
 	}
 	return 0;
@@ -361,6 +417,7 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
 #endif
+	recv_icmpv6_pkts++;
 	if (len <
 	    (int)(sizeof(struct ether_hdr) + sizeof(struct ipv6_hdr) + sizeof(struct icmp_hdr))) {
 #ifdef DEBUGICMP
@@ -395,8 +452,10 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1)
+		if (ret == 1) {
+			send_icmpv6_pkts++;
 			return 1;
+		}
 		printf("send icmpv6 packet ret = %d\n", ret);
 
 	} else if ((icmph->icmp_type == 128) && (icmph->icmp_code == 0)) {	// ICMPv6 echo req
@@ -414,8 +473,10 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1)
+		if (ret == 1) {
+			send_icmpv6_pkts++;
 			return 1;
+		}
 		printf("send icmpv6 packet ret = %d\n", ret);
 	}
 	return 0;
@@ -443,6 +504,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #ifdef DEBUGTCP
 		printf("SYN packet\n");
 #endif
+		recv_tcp_syn_pkts++;
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
@@ -482,6 +544,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #ifdef DEBUGTCP
 		fprintf(stderr, "FIN packet\n");
 #endif
+		recv_tcp_fin_pkts++;
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
@@ -524,6 +587,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		unsigned char *tcp_payload;
 		unsigned char buf[TCPMSS];	// http_respone
 		int resp_in_req = 0;
+		recv_tcp_data_pkts++;
 
 #ifdef DEBUGTCP
 		printf("ACK pkt len=%d(inc ether) ip len=%d\n", rte_pktmbuf_data_len(mbuf),
@@ -580,8 +644,10 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1)
+		if (ret == 1) {
+			send_tcp_data_pkts++;
 			return 1;
+		}
 #ifdef DEBUGTCP
 		fprintf(stderr, "send tcp packet return %d\n", ret);
 #endif
@@ -614,6 +680,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 #ifdef DEBUGTCP
 		printf("SYN packet\n");
 #endif
+		recv_tcpv6_syn_pkts++;
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
@@ -651,6 +718,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 #ifdef DEBUGTCP
 		fprintf(stderr, "FIN packet\n");
 #endif
+		recv_tcpv6_fin_pkts++;
 		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
 		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
 		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
@@ -691,6 +759,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		unsigned char *tcp_payload;
 		unsigned char buf[TCPMSS];	// http_respone
 		int resp_in_req = 0;
+		recv_tcpv6_data_pkts++;
 
 #ifdef DEBUGTCP
 		printf("ACK pkt len=%d(inc ether) ip len=%d\n", rte_pktmbuf_data_len(mbuf),
@@ -746,8 +815,10 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
 		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1)
+		if (ret == 1) {
+			send_tcpv6_data_pkts++;
 			return 1;
+		}
 #ifdef DEBUGTCP
 		fprintf(stderr, "send tcp packet return %d\n", ret);
 #endif
@@ -793,6 +864,11 @@ void lcore_main(void)
 		for (i = 0; i < nb_rx; i++) {
 			int len = rte_pktmbuf_data_len(bufs[i]);
 			struct ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct ether_hdr *);
+			recv_pkts++;
+			if (recv_pkts % STATS_PKTS == 0)
+				print_stats();
+			if (got_signal)
+				print_stats();
 #ifdef DEBUGPACKET
 			dump_packet((unsigned char *)eh, len);
 			printf("ethernet proto=%4X\n", rte_cpu_to_be_16(eh->ether_type));
@@ -813,15 +889,18 @@ void lcore_main(void)
 					printf("ipv4 packet\n");
 #endif
 					if (iph->next_proto_id == 6) {	// TCP
+						process_pkts++;
 						if (process_tcp(bufs[i], eh, iph, ipv4_hdrlen, len))
 							continue;
 					} else if (iph->next_proto_id == 1) {	// ICMP
+						process_pkts++;
 						if (process_icmp
 						    (bufs[i], eh, iph, ipv4_hdrlen, len))
 							continue;
 					}
 				}
 			} else if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_ARP)) {	// ARP protocol
+				process_pkts++;
 				if (process_arp(bufs[i], eh, len))
 					continue;
 			} else if ((has_ipv6) && (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6))) {	// IPv6 protocol
@@ -839,14 +918,17 @@ void lcore_main(void)
 					printf("ipv6 packet\n");
 #endif
 					if (ip6h->proto == 6) {	// TCP
+						process_pkts++;
 						if (process_tcpv6(bufs[i], eh, ip6h, len))
 							continue;
 					} else if (ip6h->proto == 0x3a) {	// ICMPv6
+						process_pkts++;
 						if (process_icmpv6(bufs[i], eh, ip6h, len))
 							continue;
 					}
 				}
 			}
+			drop_pkts++;
 			rte_pktmbuf_free(bufs[i]);
 		}
 	}
@@ -901,6 +983,7 @@ int main(int argc, char *argv[])
 		argv += 2;
 	}
 
+	signal(SIGHUP, sig_handler_hup);
 	user_init_func(argc, argv);
 
 	/* Check that there is an even number of ports to send/receive on. */

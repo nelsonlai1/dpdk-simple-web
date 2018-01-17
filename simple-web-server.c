@@ -59,7 +59,7 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 	32
 
-#define TCPMSS 1400
+#define TCPMSS 1440
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02

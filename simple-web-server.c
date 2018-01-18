@@ -140,7 +140,10 @@ void print_stats(void)
 
 static inline int user_init_func(int, char *[]);
 static inline char *INET_NTOA(uint32_t ip);
-static inline void swap_bytes(unsigned char *a, unsigned char *b, int len);
+static inline void swap_2bytes(unsigned char *a, unsigned char *b);
+static inline void swap_4bytes(unsigned char *a, unsigned char *b);
+static inline void swap_6bytes(unsigned char *a, unsigned char *b);
+static inline void swap_16bytes(unsigned char *a, unsigned char *b);
 static inline void dump_packet(unsigned char *buf, int len);
 static inline void dump_arp_packet(struct ether_hdr *eh);
 static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len);
@@ -160,17 +163,34 @@ static inline char *INET_NTOA(uint32_t ip)	// ip in network order
 	return buf;
 }
 
-static inline void swap_bytes(unsigned char *a, unsigned char *b, int len)
+static inline void swap_2bytes(unsigned char *a, unsigned char *b)
 {
-	unsigned char t;
-	int i;
-	if (len <= 0)
-		return;
-	for (i = 0; i < len; i++) {
-		t = *(a + i);
-		*(a + i) = *(b + i);
-		*(b + i) = t;
-	}
+	uint16_t t;
+	t = *((uint16_t *) a);
+	*((uint16_t *) a) = *((uint16_t *) b);
+	*((uint16_t *) b) = t;
+}
+
+static inline void swap_4bytes(unsigned char *a, unsigned char *b)
+{
+	uint32_t t;
+	t = *((uint32_t *) a);
+	*((uint32_t *) a) = *((uint32_t *) b);
+	*((uint32_t *) b) = t;
+}
+
+static inline void swap_6bytes(unsigned char *a, unsigned char *b)
+{
+	swap_4bytes(a, b);
+	swap_2bytes(a + 4, b + 4);
+}
+
+static inline void swap_16bytes(unsigned char *a, unsigned char *b)
+{
+	swap_4bytes(a, b);
+	swap_4bytes(a + 4, b + 4);
+	swap_4bytes(a + 8, b + 8);
+	swap_4bytes(a + 12, b + 12);
 }
 
 /*
@@ -463,7 +483,7 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 			return 0;
 		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
 		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
-		swap_bytes(ip6h->src_addr, ip6h->dst_addr, 16);
+		swap_16bytes(ip6h->src_addr, ip6h->dst_addr);
 		ip6h->hop_limits = 255;
 		icmph->icmp_type = 129;
 		icmph->icmp_cksum = 0;
@@ -505,9 +525,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		printf("SYN packet\n");
 #endif
 		recv_tcp_syn_pkts++;
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_4bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
 		tcph->sent_seq = rte_cpu_to_be_32(1);
@@ -545,10 +565,10 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		fprintf(stderr, "FIN packet\n");
 #endif
 		recv_tcp_fin_pkts++;
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
-		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_4bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
+		swap_4bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack);
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
@@ -585,7 +605,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = TCPMSS;
 		unsigned char *tcp_payload;
-		unsigned char buf[TCPMSS];	// http_respone
+		unsigned char buf[TCPMSS];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
 
@@ -611,9 +631,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #endif
 		uint32_t ack_seq =
 		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr, 4);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_4bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		if (!resp_in_req)
 			rte_memcpy(tcp_payload, buf, ntcp_payload_len);
 		pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
@@ -681,9 +701,9 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		printf("SYN packet\n");
 #endif
 		recv_tcpv6_syn_pkts++;
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_16bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
 		tcph->sent_seq = rte_cpu_to_be_32(1);
@@ -719,10 +739,10 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		fprintf(stderr, "FIN packet\n");
 #endif
 		recv_tcpv6_fin_pkts++;
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
-		swap_bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack, 4);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_16bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
+		swap_4bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack);
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
@@ -783,9 +803,9 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 #endif
 		uint32_t ack_seq =
 		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
-		swap_bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr, 6);
-		swap_bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr, 16);
-		swap_bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port, 2);
+		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
+		swap_16bytes((unsigned char *)&ip6h->src_addr, (unsigned char *)&ip6h->dst_addr);
+		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		if (!resp_in_req)
 			rte_memcpy(tcp_payload, buf, ntcp_payload_len);
 		payload_len = ntcp_payload_len + (tcph->data_off >> 4) * 4;

@@ -60,6 +60,7 @@
 #define BURST_SIZE 	32
 
 #define TCPMSS 1440
+#define MAXLEN 64000
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -72,7 +73,7 @@
 //#define DEBUGPACKET
 //#define DEBUGARP
 //#define DEBUGICMP
-//#define DEBUGTCP
+#define DEBUGTCP
 
 #define USINGHWCKSUM
 
@@ -80,6 +81,8 @@ static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {.max_rx_pkt_len = ETHER_MAX_LEN},
 	.txmode = {.mq_mode = ETH_MQ_TX_NONE},
 };
+
+struct rte_mempool *mbuf_pool;	// ?? for multicore
 
 struct ether_addr my_eth_addr;	// My ethernet address
 uint32_t my_ip;			// My IP Address in network order
@@ -603,9 +606,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 	} else if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
 		pkt_len = rte_be_to_cpu_16(iph->total_length);
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
-		int ntcp_payload_len = TCPMSS;
+		int ntcp_payload_len = MAXLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[TCPMSS];	// http_response
+		unsigned char buf[MAXLEN];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
 
@@ -634,44 +637,113 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
 		swap_4bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr);
 		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
-		if (!resp_in_req)
-			rte_memcpy(tcp_payload, buf, ntcp_payload_len);
-		pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
-		iph->total_length = rte_cpu_to_be_16(pkt_len);
-#ifdef DEBUGTCP
-		fprintf(stderr, "new pkt len=%d\n", pkt_len);
-#endif
 		tcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
 		tcph->sent_seq = tcph->recv_ack;
 		tcph->recv_ack = ack_seq;
 		tcph->cksum = 0;
 		iph->hdr_checksum = 0;
 		iph->time_to_live = TTL;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
-		if (hardware_cksum) {
-			// printf("ol_flags=%ld\n",mbuf->ol_flags);
-			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
-			mbuf->l3_len = ipv4_hdrlen;
-			mbuf->l4_len = ntcp_payload_len;
-			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
-		} else {
-			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
-			iph->hdr_checksum = rte_ipv4_cksum(iph);
-		}
+
+		if (ntcp_payload_len <= TCPMSS) {	// tcp packet fit in one IP packet
+			if (!resp_in_req)
+				rte_memcpy(tcp_payload, buf, ntcp_payload_len);
+			pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
+			iph->total_length = rte_cpu_to_be_16(pkt_len);
 #ifdef DEBUGTCP
-		printf("I will reply following:\n");
-		dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
+			fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
-		int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
-		if (ret == 1) {
-			send_tcp_data_pkts++;
-			return 1;
-		}
+			rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+			if (hardware_cksum) {
+				// printf("ol_flags=%ld\n",mbuf->ol_flags);
+				mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+				mbuf->l2_len = ETHER_HDR_LEN;
+				mbuf->l3_len = ipv4_hdrlen;
+				mbuf->l4_len = ntcp_payload_len;
+				tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			} else {
+				tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+				iph->hdr_checksum = rte_ipv4_cksum(iph);
+			}
 #ifdef DEBUGTCP
-		fprintf(stderr, "send tcp packet return %d\n", ret);
+			printf("I will reply following:\n");
+			dump_packet((unsigned char *)eh, rte_pktmbuf_data_len(mbuf));
 #endif
-		return 0;
+			int ret = rte_eth_tx_burst(0, 0, &mbuf, 1);
+			if (ret == 1) {
+				send_tcp_data_pkts++;
+				return 1;
+			}
+#ifdef DEBUGTCP
+			fprintf(stderr, "send tcp packet return %d\n", ret);
+#endif
+			return 0;
+		} else {	// tcp packet could not fit in one IP packet, I will send one by one
+
+			if (resp_in_req) {
+				printf("BIG TCP packet, must returned in my buf\n");
+				return 0;
+			}
+			int offset = 0, left = ntcp_payload_len;
+			uint32_t sent_seq = rte_be_to_cpu_32(tcph->sent_seq);
+			while (left > 0) {
+				struct rte_mbuf *frag;
+				struct ether_hdr *neh;
+				struct ipv4_hdr *niph;
+				struct tcp_hdr *ntcph;
+				len = left < TCPMSS ? left : TCPMSS;
+				left -= len;
+				printf("offset=%d len=%d\n", offset, len);
+				frag = rte_pktmbuf_alloc(mbuf_pool);
+				if (!frag) {
+					printf("mutli packet alloc error\n");
+					return 0;
+				}
+				neh = rte_pktmbuf_mtod(frag, struct ether_hdr *);
+				rte_memcpy(neh, eh, ETHER_HDR_LEN + ipv4_hdrlen + (tcph->data_off >> 4) * 4);	// copy eth/ip/tcp header
+				niph = (struct ipv4_hdr *)((unsigned char *)(neh) + ETHER_HDR_LEN);
+				ntcph = (struct tcp_hdr *)((unsigned char *)(niph) + ipv4_hdrlen);
+				tcp_payload =
+				    (unsigned char *)niph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
+				rte_memcpy(tcp_payload, buf + offset, len);
+				ntcph->sent_seq = rte_cpu_to_be_32(sent_seq + offset);	// header ok except sent_seq
+				if (left > 0)
+					ntcph->tcp_flags = TCP_ACK;
+				else
+					ntcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
+
+				pkt_len = len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
+				niph->total_length = rte_cpu_to_be_16(pkt_len);
+#ifdef DEBUGTCP
+				fprintf(stderr, "new pkt len=%d\n", pkt_len);
+#endif
+				rte_pktmbuf_data_len(frag) = pkt_len + ETHER_HDR_LEN;
+				if (hardware_cksum) {
+					// printf("ol_flags=%ld\n",mbuf->ol_flags);
+					frag->ol_flags =
+					    PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+					frag->l2_len = ETHER_HDR_LEN;
+					frag->l3_len = ipv4_hdrlen;
+					frag->l4_len = len;
+					ntcph->cksum =
+					    rte_ipv4_phdr_cksum((const struct ipv4_hdr *)niph, 0);
+				} else {
+					ntcph->cksum = rte_ipv4_udptcp_cksum(niph, ntcph);
+					niph->hdr_checksum = rte_ipv4_cksum(niph);
+				}
+#ifdef DEBUGTCP
+//				printf("I will reply following:\n");
+//				dump_packet((unsigned char *)neh, rte_pktmbuf_data_len(frag));
+#endif
+				int ret = rte_eth_tx_burst(0, 0, &frag, 1);
+				if (ret == 0) {
+#ifdef DEBUGTCP
+					fprintf(stderr, "send tcp packet return %d\n", ret);
+#endif
+					return 0;
+				}
+				offset += len;
+			}
+		}
 	}
 	return 0;
 }
@@ -960,7 +1032,6 @@ void lcore_main(void)
  */
 int main(int argc, char *argv[])
 {
-	struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
 
 	/* Initialize the Environment Abstraction Layer (EAL). */

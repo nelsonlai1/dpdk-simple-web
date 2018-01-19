@@ -60,7 +60,7 @@
 #define BURST_SIZE 	32
 
 #define TCPMSS 1200
-#define MAXLEN 64000
+#define MAXIPLEN 64000
 
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
@@ -606,9 +606,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 	} else if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
 		pkt_len = rte_be_to_cpu_16(iph->total_length);
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
-		int ntcp_payload_len = MAXLEN;
+		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXLEN];	// http_response
+		unsigned char buf[MAXIPLEN];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
 
@@ -854,9 +854,9 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 	} else if ((tcph->tcp_flags & (TCP_SYN | TCP_ACK)) == TCP_ACK) {	// ACK packet, send DATA
 		payload_len = rte_be_to_cpu_16(ip6h->payload_len);
 		int tcp_payload_len = payload_len - (tcph->data_off >> 4) * 4;
-		int ntcp_payload_len = MAXLEN;
+		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXLEN];	// http_respone
+		unsigned char buf[MAXIPLEN];	// http_respone
 		int resp_in_req = 0;
 		recv_tcpv6_data_pkts++;
 

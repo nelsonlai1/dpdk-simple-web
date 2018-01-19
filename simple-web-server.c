@@ -683,7 +683,8 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
-			int offset = 0, left = ntcp_payload_len;
+			uint32_t offset = 0;
+			int left = ntcp_payload_len;
 			uint32_t sent_seq = rte_be_to_cpu_32(tcph->sent_seq);
 			while (left > 0) {
 				struct rte_mbuf *frag;
@@ -928,9 +929,10 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
-			int offset = 0, left = ntcp_payload_len;
+			uint32_t offset = 0;
+			int left = ntcp_payload_len;
 			uint32_t sent_seq = rte_be_to_cpu_32(tcph->sent_seq);
-			while (left < 0) {
+			while (left > 0) {
 				struct rte_mbuf *frag;
 				struct ether_hdr *neh;
 				struct ipv6_hdr *nip6h;

@@ -729,7 +729,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #endif
 				rte_pktmbuf_data_len(frag) = pkt_len + ETHER_HDR_LEN;
 				if (hardware_cksum) {
-					printf("ol_flags=%ld\n", frag->ol_flags);
+					// printf("ol_flags=%ld\n", frag->ol_flags);
 					frag->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
 					frag->l2_len = ETHER_HDR_LEN;
 					frag->l3_len = sizeof(struct ipv4_hdr);

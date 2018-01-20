@@ -50,6 +50,7 @@
 #include <rte_arp.h>
 #include <rte_icmp.h>
 #include <rte_ip.h>
+#include <rte_ip_frag.h>
 #include <rte_tcp.h>
 
 #define RX_RING_SIZE 128
@@ -73,7 +74,7 @@
 //#define DEBUGPACKET
 //#define DEBUGARP
 //#define DEBUGICMP
-#define DEBUGTCP
+//#define DEBUGTCP
 
 #define USINGHWCKSUM
 
@@ -859,7 +860,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		int tcp_payload_len = payload_len - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXIPLEN];	// http_respone
+		unsigned char buf[MAXIPLEN + sizeof(struct tcp_hdr)];	// http_respone
 		int resp_in_req = 0;
 		recv_tcpv6_data_pkts++;
 
@@ -876,12 +877,12 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		}
 		tcp_payload = (unsigned char *)tcph + (tcph->data_off >> 4) * 4;
 		if (process_http
-		    (6, ip6h, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len,
-		     &resp_in_req)
+		    (6, ip6h, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct tcp_hdr),
+		     &ntcp_payload_len, &resp_in_req)
 		    == 0)
 			return 0;
 #ifdef DEBUGTCP
-		printf("new payload len=%d :%s:\n", ntcp_payload_len, buf);
+		printf("new payload len=%d\n", ntcp_payload_len);
 #endif
 		uint32_t ack_seq =
 		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
@@ -928,18 +929,24 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 #endif
 			return 0;
 		} else {	// tcp packet could not fit in one IP packet, I will send one by one
+			struct rte_mbuf *frag;
+			struct ether_hdr *neh;
+			struct ipv6_hdr *nip6h;
+			struct tcp_hdr *ntcph;
+			struct ipv6_extension_fragment *ipv6ef;
+			int left = ntcp_payload_len + sizeof(struct tcp_hdr);
+			uint32_t offset = 0;
 			if (resp_in_req) {
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
-			uint32_t offset = 0;
-			int left = ntcp_payload_len;
-			uint32_t sent_seq = rte_be_to_cpu_32(tcph->sent_seq);
+			ip6h->payload_len = rte_cpu_to_be_16(left);
+			tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+			ntcph = (struct tcp_hdr *)buf;
+			rte_memcpy(ntcph, tcph, sizeof(struct tcp_hdr));	// copy tcp header to begin of buf
+			ntcph->cksum = rte_ipv6_udptcp_cksum(ip6h, ntcph);	// trick but works, now eth/ip header in mbuf, tcp packet in buf
+
 			while (left > 0) {
-				struct rte_mbuf *frag;
-				struct ether_hdr *neh;
-				struct ipv6_hdr *nip6h;
-				struct tcp_hdr *ntcph;
 				len = left < TCPMSS ? left : TCPMSS;
 				left -= len;
 #ifdef DEBUGTCP
@@ -951,35 +958,32 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 					return 0;
 				}
 				neh = rte_pktmbuf_mtod(frag, struct ether_hdr *);
-				rte_memcpy(neh, eh, ETHER_HDR_LEN + sizeof(struct ipv6_hdr) + (tcph->data_off >> 4) * 4);	// copy eth/ip/tcp header
+				rte_memcpy(neh, eh, ETHER_HDR_LEN + sizeof(struct ipv6_hdr));	// copy eth/ip header
 				nip6h = (struct ipv6_hdr *)((unsigned char *)(neh) + ETHER_HDR_LEN);
+				ipv6ef =
+				    (struct ipv6_extension_fragment *)((unsigned char *)neh +
+								       ETHER_HDR_LEN +
+								       sizeof(struct ipv6_hdr));
 				ntcph =
-				    (struct tcp_hdr *)((unsigned char *)(nip6h) +
-						       sizeof(struct ipv6_hdr));
-				tcp_payload = (unsigned char *)ntcph + (tcph->data_off >> 4) * 4;
-				rte_memcpy(tcp_payload, buf + offset, len);
-				ntcph->sent_seq = rte_cpu_to_be_32(sent_seq + offset);	// header ok except sent_seq
+				    (struct tcp_hdr *)((unsigned char *)(ipv6ef) +
+						       sizeof(struct ipv6_extension_fragment));
+				rte_memcpy(ntcph, buf + offset, len);
+				ipv6ef->next_header = 6;	// TCP
+				ipv6ef->reserved = 0;
+				ipv6ef->id = tcph->dst_port;
+				ipv6ef->frag_data = rte_cpu_to_be_16((offset >> 3) << 3);
 				if (left > 0)
-					ntcph->tcp_flags = TCP_ACK;
-				else
-					ntcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
-				payload_len = len + (ntcph->data_off >> 4) * 4;
+					ipv6ef->frag_data |=
+					    rte_cpu_to_be_16(RTE_IPV6_EHDR_MF_MASK);
+				payload_len = len + sizeof(struct ipv6_extension_fragment);
 				nip6h->payload_len = rte_cpu_to_be_16(payload_len);
+				nip6h->proto = 44;	// fragment extension header
 #ifdef DEBUGTCP
-				fprintf(stderr, "new pkt len=%d\n", payload_len);
+				fprintf(stderr, "frag offset=%d, pkt len=%d\n", offset,
+					payload_len);
 #endif
 				rte_pktmbuf_data_len(frag) =
 				    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
-				if (hardware_cksum_v6) {
-					frag->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
-					frag->l2_len = sizeof(struct ether_hdr);
-					frag->l3_len = sizeof(struct ipv6_hdr);
-					frag->l4_len = sizeof(struct tcp_hdr) + len;
-					ntcph->cksum =
-					    rte_ipv6_phdr_cksum((const struct ipv6_hdr *)nip6h, 0);
-				} else {
-					ntcph->cksum = rte_ipv6_udptcp_cksum(nip6h, ntcph);
-				}
 #ifdef DEBUGTCP
 				printf("I will reply following:\n");
 				dump_packet((unsigned char *)neh, rte_pktmbuf_data_len(frag));

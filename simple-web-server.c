@@ -73,7 +73,7 @@
 //#define DEBUGPACKET
 //#define DEBUGARP
 //#define DEBUGICMP
-//#define DEBUGTCP
+#define DEBUGTCP
 
 #define USINGHWCKSUM
 
@@ -106,6 +106,7 @@ uint64_t send_icmp_pkts = 0;
 uint64_t recv_tcp_syn_pkts = 0;
 uint64_t recv_tcp_data_pkts = 0;
 uint64_t send_tcp_data_pkts = 0;
+uint64_t send_tcp_data_multi_pkts = 0;
 uint64_t recv_tcp_fin_pkts = 0;
 
 uint64_t recv_icmpv6_pkts = 0;
@@ -129,8 +130,9 @@ void print_stats(void)
 	       recv_pkts, process_pkts, drop_pkts);
 	printf("ARP Packets recevied: %ld send: %ld\n", recv_arp_pkts, send_arp_pkts);
 	printf("ICMP Packets recevied: %ld send: %ld\n", recv_icmp_pkts, send_icmp_pkts);
-	printf("TCP Packets SYN: %ld, FIN: %ld, DATA: %ld/%ld\n",
-	       recv_tcp_syn_pkts, recv_tcp_fin_pkts, recv_tcp_data_pkts, send_tcp_data_pkts);
+	printf("TCP Packets SYN: %ld, FIN: %ld, DATA: %ld/%ld/%ld\n",
+	       recv_tcp_syn_pkts, recv_tcp_fin_pkts, recv_tcp_data_pkts, send_tcp_data_pkts,
+	       send_tcp_data_multi_pkts);
 	if (has_ipv6) {
 		printf("ICMPv6 Packets recevied: %ld send: %ld\n",
 		       recv_icmpv6_pkts, send_icmpv6_pkts);
@@ -608,7 +610,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXIPLEN];	// http_response
+		unsigned char buf[MAXIPLEN + sizeof(struct tcp_hdr)];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
 
@@ -625,12 +627,12 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		}
 		tcp_payload = (unsigned char *)iph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 		if (process_http
-		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf, &ntcp_payload_len,
-		     &resp_in_req)
+		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct tcp_hdr),
+		     &ntcp_payload_len, &resp_in_req)
 		    == 0)
 			return 0;
 #ifdef DEBUGTCP
-		printf("new payload len=%d :%s:\n", ntcp_payload_len, buf);
+		printf("http return new payload len=%d\n", ntcp_payload_len);
 #endif
 		uint32_t ack_seq =
 		    rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + tcp_payload_len);
@@ -646,9 +648,11 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 
 		if (ntcp_payload_len <= TCPMSS) {	// tcp packet fit in one IP packet
 			if (!resp_in_req)
-				rte_memcpy(tcp_payload, buf, ntcp_payload_len);
+				rte_memcpy(tcp_payload, buf + sizeof(struct tcp_hdr),
+					   ntcp_payload_len);
 			pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 			iph->total_length = rte_cpu_to_be_16(pkt_len);
+			iph->fragment_offset = 0;
 #ifdef DEBUGTCP
 			fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
@@ -678,20 +682,25 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #endif
 			return 0;
 		} else {	// tcp packet could not fit in one IP packet, I will send one by one
-
+			struct rte_mbuf *frag;
+			struct ether_hdr *neh;
+			struct ipv4_hdr *niph;
+			struct tcp_hdr *ntcph;
+			int left = ntcp_payload_len + sizeof(struct tcp_hdr);
+			uint32_t offset = 0;
 			if (resp_in_req) {
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
-			uint32_t offset = 0;
-			int left = ntcp_payload_len;
-			uint32_t sent_seq = rte_be_to_cpu_32(tcph->sent_seq);
+			iph->total_length = rte_cpu_to_be_16(left + sizeof(struct ipv4_hdr));
+			iph->fragment_offset = 0;
+			iph->packet_id = tcph->dst_port;
+			tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+			ntcph = (struct tcp_hdr *)buf;
+			rte_memcpy(ntcph, tcph, sizeof(struct tcp_hdr));	// copy tcp header to begin of buf
+			ntcph->cksum = rte_ipv4_udptcp_cksum(iph, ntcph);	// trick but works, now eth/ip header in mbuf, tcp packet in buf
 			while (left > 0) {
-				struct rte_mbuf *frag;
-				struct ether_hdr *neh;
-				struct ipv4_hdr *niph;
-				struct tcp_hdr *ntcph;
-				len = left < TCPMSS ? left : TCPMSS;
+				len = left < TCPMSS ? left : (TCPMSS & 0xfff0);
 				left -= len;
 #ifdef DEBUGTCP
 				printf("offset=%d len=%d\n", offset, len);
@@ -702,37 +711,31 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 					return 0;
 				}
 				neh = rte_pktmbuf_mtod(frag, struct ether_hdr *);
-				rte_memcpy(neh, eh, ETHER_HDR_LEN + ipv4_hdrlen + (tcph->data_off >> 4) * 4);	// copy eth/ip/tcp header
+				rte_memcpy(neh, eh, ETHER_HDR_LEN + sizeof(struct ipv4_hdr));	// copy eth/ip header
 				niph = (struct ipv4_hdr *)((unsigned char *)(neh) + ETHER_HDR_LEN);
-				ntcph = (struct tcp_hdr *)((unsigned char *)(niph) + ipv4_hdrlen);
-				tcp_payload =
-				    (unsigned char *)niph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
-				rte_memcpy(tcp_payload, buf + offset, len);
-				ntcph->sent_seq = rte_cpu_to_be_32(sent_seq + offset);	// header ok except sent_seq
-				if (left > 0)
-					ntcph->tcp_flags = TCP_ACK;
-				else
-					ntcph->tcp_flags = TCP_ACK | TCP_PSH | TCP_FIN;
+				ntcph =
+				    (struct tcp_hdr *)((unsigned char *)(niph) +
+						       sizeof(struct ipv4_hdr));
+				rte_memcpy(ntcph, buf + offset, len);
 
-				pkt_len = len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
+				pkt_len = len + sizeof(struct ipv4_hdr);
 				niph->total_length = rte_cpu_to_be_16(pkt_len);
+				niph->fragment_offset = rte_cpu_to_be_16(offset >> 3);
+				if (left > 0)
+					niph->fragment_offset |= rte_cpu_to_be_16(IPV4_HDR_MF_FLAG);
 #ifdef DEBUGTCP
-				fprintf(stderr, "new pkt len=%d\n", pkt_len);
+				fprintf(stderr, "frag offset %d, pkt len=%d\n", offset, pkt_len);
 #endif
 				rte_pktmbuf_data_len(frag) = pkt_len + ETHER_HDR_LEN;
 				if (hardware_cksum) {
-					// printf("ol_flags=%ld\n",mbuf->ol_flags);
-					frag->ol_flags =
-					    PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
+					printf("ol_flags=%ld\n", frag->ol_flags);
+					frag->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
 					frag->l2_len = ETHER_HDR_LEN;
-					frag->l3_len = ipv4_hdrlen;
+					frag->l3_len = sizeof(struct ipv4_hdr);
 					frag->l4_len = len;
-					ntcph->cksum =
-					    rte_ipv4_phdr_cksum((const struct ipv4_hdr *)niph, 0);
-				} else {
-					ntcph->cksum = rte_ipv4_udptcp_cksum(niph, ntcph);
+				} else
 					niph->hdr_checksum = rte_ipv4_cksum(niph);
-				}
+
 #ifdef DEBUGTCP
 //                              printf("I will reply following:\n");
 //                              dump_packet((unsigned char *)neh, rte_pktmbuf_data_len(frag));
@@ -745,7 +748,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 					rte_pktmbuf_free(frag);
 					return 0;
 				}
-				send_tcp_data_pkts++;
+				send_tcp_data_multi_pkts++;
 				offset += len;
 			}
 			rte_pktmbuf_free(mbuf);

@@ -54,7 +54,7 @@ xzcat dpdk-17.11.tar.xz | tar xvf -
 
 #2.1 dpdk环境准备，如果网卡是vmxnet3或intel常见网卡，可以用usertools/dpdk-setup.py
 cd dpdk-17.11
-usertools/dpdk-setup.py
+usertools/dpdk-setup.sh
 select 14 编译
 select 17 加载模块
 select 21 输入64

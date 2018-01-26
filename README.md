@@ -20,7 +20,7 @@ HTTP request and response must fit in one ethernet packet
 2GB左右，如果是1Gbps的网络，大约20秒可以完成。
 
 本服务器只能处理极其简单的请求: 仅仅处理用户发来的第一个TCP包中的请求（最好使用GET请求），
-HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片功能）。
+HTTP应答也不能超过IP包长度（超过MSS会分片发出）。
 
 已实现功能：
 * 响应ARP
@@ -28,6 +28,7 @@ HTTP应答也最好不超过TCP MSS长度（也许将来可以实现IP包分片�
 * 响应TCP SYN
 * 响应HTTP
 * 响应ICMPv6
+* 应答包IP分片发出
 
 我的环境：(Ubuntu 17.10)
 

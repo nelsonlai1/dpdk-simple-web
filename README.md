@@ -48,13 +48,13 @@ apt-get install gcc git make libnuma-dev
 ln -s /usr/bin/python3 /usr/bin/python
 
 cd /usr/src
-wget https://fast.dpdk.org/rel/dpdk-17.11.tar.xz
-xzcat dpdk-17.11.tar.xz | tar xvf -
+wget https://fast.dpdk.org/rel/dpdk-18.02.tar.xz
+xzcat dpdk-18.02.tar.xz | tar xvf -
 
 #以下dpdk环境准备，选择一种即可
 
 #2.1 dpdk环境准备，如果网卡是vmxnet3或intel常见网卡，可以用usertools/dpdk-setup.py
-cd dpdk-17.11
+cd dpdk-18.02
 usertools/dpdk-setup.sh
 select 14 编译
 select 17 加载模块
@@ -63,17 +63,20 @@ select 22 查看网卡
 select 23 输入空余的网卡名字，绑定网卡
 
 #2.2 如果是不常用网卡，可能需要手工操作
-cd dpdk-17.11
+cd dpdk-18.02
 export RTE_SDK=$PWD
 export RTE_TARGET=x86_64-native-linuxapp-gcc
 make install T=${RTE_TARGET}
 #必要时修改 x86_64-native-linuxapp-gcc/config 启用某些网卡驱动
+
+
+#以下脚本每次机器重启都要执行，最后的eth1请用自己的网卡替换，这个网卡将被DPDK接管
 modprobe uio
-insmod ./x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
+insmod /usr/src/dpdk-18.02//x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
 mkdir /mnt/huge
 mount -t hugetlbfs nodev /mnt/huge
 echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-./usertools/dpdk-devbind.py --bind igb_uio eth1
+/usr/src/dpdk-18.02/usertools/dpdk-devbind.py --bind igb_uio eth1
 
 
 cd /usr/src/

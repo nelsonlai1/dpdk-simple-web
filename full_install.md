@@ -106,20 +106,20 @@ apt-get install gcc git make libnuma-dev
 ln -s /usr/bin/python3 /usr/bin/python
 
 cd /usr/src
-wget https://fast.dpdk.org/rel/dpdk-17.11.tar.xz
-xzcat dpdk-17.11.tar.xz | tar xvf -
+wget https://fast.dpdk.org/rel/dpdk-18.02.tar.xz
+xzcat dpdk-18.02.tar.xz | tar xvf -
 
-cd dpdk-17.11
+cd dpdk-18.02
 export RTE_SDK=$PWD
 export RTE_TARGET=x86_64-native-linuxapp-gcc
 make install T=${RTE_TARGET}
 
 modprobe uio
-insmod /usr/src/dpdk-17.11/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
+insmod /usr/src/dpdk-18.02/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
 mkdir /mnt/huge
 mount -t hugetlbfs nodev /mnt/huge
 echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
-/usr/src/dpdk-17.11/usertools/dpdk-devbind.py --bind igb_uio ens92
+/usr/src/dpdk-18.02/usertools/dpdk-devbind.py --bind igb_uio ens92
 
 ```
 

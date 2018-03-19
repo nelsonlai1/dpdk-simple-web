@@ -543,7 +543,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		iph->time_to_live = TTL;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
@@ -583,7 +583,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		iph->time_to_live = TTL;
-		rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
@@ -657,7 +657,8 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #ifdef DEBUGTCP
 			fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
-			rte_pktmbuf_data_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+			rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
+			    pkt_len + ETHER_HDR_LEN;
 			if (hardware_cksum) {
 				// printf("ol_flags=%ld\n",mbuf->ol_flags);
 				mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
@@ -727,7 +728,8 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #ifdef DEBUGTCP
 				fprintf(stderr, "frag offset %d, pkt len=%d\n", offset, pkt_len);
 #endif
-				rte_pktmbuf_data_len(frag) = pkt_len + ETHER_HDR_LEN;
+				rte_pktmbuf_data_len(frag) = rte_pktmbuf_pkt_len(frag) =
+				    pkt_len + ETHER_HDR_LEN;
 				if (hardware_cksum) {
 					// printf("ol_flags=%ld\n", frag->ol_flags);
 					frag->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
@@ -795,7 +797,8 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		payload_len = sizeof(struct tcp_hdr);
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
-		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
+		    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
 		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
@@ -833,7 +836,8 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		payload_len = sizeof(struct tcp_hdr);
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
-		rte_pktmbuf_data_len(mbuf) = payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
+		    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
 		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
@@ -903,7 +907,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 #ifdef DEBUGTCP
 			fprintf(stderr, "new payload len=%d\n", payload_len);
 #endif
-			rte_pktmbuf_data_len(mbuf) =
+			rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
 			    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
 			if (hardware_cksum_v6) {
 				// printf("ol_flags=%ld\n",mbuf->ol_flags);
@@ -982,7 +986,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 				fprintf(stderr, "frag offset=%d, pkt len=%d\n", offset,
 					payload_len);
 #endif
-				rte_pktmbuf_data_len(frag) =
+				rte_pktmbuf_data_len(frag) = rte_pktmbuf_pkt_len(frag) =
 				    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
 #ifdef DEBUGTCP
 				printf("I will reply following:\n");

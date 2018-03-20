@@ -4,7 +4,7 @@ support IPv4/IPv6.
 
 Doesn't store tcp connection status information, so it can support any number of concurrent clients
 
-HTTP request and response must fit in one ethernet packet
+HTTP request and response must fit in one IP packet
 
 
 ## 使用DPDK的简单web server
@@ -35,6 +35,7 @@ HTTP应答也不能超过IP包长度（超过MSS会分片发出）。
 * 环境一：物理服务器，网卡：Intel Corporation 82574L Gigabit Network Connection
 * 环境二：VMware ESXi 虚拟机，网卡：vmxnet3
 * 环境三：MacBook Pro Virtual Box虚拟机，网卡：Intel PRO/1000 MT服务器(82545EM)
+* 环境四：DPDK-2340 Quad Core System，网卡：Intel I210
 
 注意：程序运行时占用1个核100% CPU，如果是笔记本电脑发热严重。
 

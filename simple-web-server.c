@@ -97,6 +97,7 @@ int has_ipv6 = 0;
 volatile int got_signal = 0;
 #define STATS_PKTS 100000
 
+uint32_t tcp_syn_random = 0;	// simple random sent_seq
 uint64_t recv_pkts = 0;
 uint64_t process_pkts = 0;
 uint64_t drop_pkts = 0;
@@ -531,12 +532,17 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		printf("SYN packet\n");
 #endif
 		recv_tcp_syn_pkts++;
+
 		swap_6bytes((unsigned char *)&eh->s_addr, (unsigned char *)&eh->d_addr);
 		swap_4bytes((unsigned char *)&iph->src_addr, (unsigned char *)&iph->dst_addr);
 		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
-		tcph->sent_seq = rte_cpu_to_be_32(1);
+		tcph->sent_seq =
+		    rte_cpu_to_be_32(*(uint32_t *) & iph->src_addr +
+				     *(uint32_t *) & iph->dst_addr +
+				     *(uint16_t *) & tcph->src_port +
+				     *(uint16_t *) & tcph->dst_port + tcp_syn_random);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
 		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
@@ -614,7 +620,6 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		unsigned char buf[MAXIPLEN + sizeof(struct tcp_hdr)];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
-
 #ifdef DEBUGTCP
 		printf("ACK pkt len=%d(inc ether) ip len=%d\n", rte_pktmbuf_data_len(mbuf),
 		       pkt_len);
@@ -626,11 +631,20 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 #endif
 			return 0;
 		}
+		if (tcph->recv_ack !=
+		    rte_cpu_to_be_32(*(uint32_t *) & iph->src_addr +
+				     *(uint32_t *) & iph->dst_addr +
+				     *(uint16_t *) & tcph->src_port +
+				     *(uint16_t *) & tcph->dst_port + tcp_syn_random + 1)) {
+#ifdef DEBUGTCP
+			printf("ack_seq error\n");
+#endif
+			return 0;
+		}
 		tcp_payload = (unsigned char *)iph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 		if (process_http
 		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct tcp_hdr),
-		     &ntcp_payload_len, &resp_in_req)
-		    == 0)
+		     &ntcp_payload_len, &resp_in_req) == 0)
 			return 0;
 #ifdef DEBUGTCP
 		printf("http return new payload len=%d\n", ntcp_payload_len);
@@ -791,7 +805,11 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		swap_2bytes((unsigned char *)&tcph->src_port, (unsigned char *)&tcph->dst_port);
 		tcph->tcp_flags = TCP_ACK | TCP_SYN;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->sent_seq) + 1);
-		tcph->sent_seq = rte_cpu_to_be_32(1);
+		tcph->sent_seq =
+		    rte_cpu_to_be_32(*(uint32_t *) & ip6h->src_addr +
+				     *(uint32_t *) & ip6h->dst_addr +
+				     *(uint16_t *) & tcph->src_port +
+				     *(uint16_t *) & tcph->dst_port + tcp_syn_random);
 		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
 		payload_len = sizeof(struct tcp_hdr);
@@ -876,6 +894,16 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		if (tcp_payload_len <= 5) {
 #ifdef DEBUGTCP
 			printf("tcp payload len=%d too small, ignore\n", tcp_payload_len);
+#endif
+			return 0;
+		}
+		if (tcph->recv_ack !=
+		    rte_cpu_to_be_32(*(uint32_t *) & ip6h->src_addr +
+				     *(uint32_t *) & ip6h->dst_addr +
+				     *(uint16_t *) & tcph->src_port +
+				     *(uint16_t *) & tcph->dst_port + tcp_syn_random + 1)) {
+#ifdef DEBUGTCP
+			printf("ack_seq error\n");
 #endif
 			return 0;
 		}
@@ -1168,6 +1196,8 @@ int main(int argc, char *argv[])
 	signal(SIGHUP, sig_handler_hup);
 	user_init_func(argc, argv);
 
+	srand(time(NULL));
+	tcp_syn_random = rand();
 	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count();
 	if (nb_ports != 1)

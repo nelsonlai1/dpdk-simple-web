@@ -79,13 +79,13 @@
 #define USINGHWCKSUM
 
 static const struct rte_eth_conf port_conf_default = {
-	.rxmode = {.max_rx_pkt_len = ETHER_MAX_LEN},
+	.rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN},
 	.txmode = {.mq_mode = ETH_MQ_TX_NONE},
 };
 
 struct rte_mempool *mbuf_pool;	// ?? for multicore
 
-struct ether_addr my_eth_addr;	// My ethernet address
+struct rte_ether_addr my_eth_addr;	// My ethernet address
 uint32_t my_ip;			// My IP Address in network order
 uint8_t my_ipv6[16];		// My IPv6 Address in network order
 uint8_t my_ipv6_m[16];		// My node multicast address
@@ -152,13 +152,13 @@ static inline void swap_4bytes(unsigned char *a, unsigned char *b);
 static inline void swap_6bytes(unsigned char *a, unsigned char *b);
 static inline void swap_16bytes(unsigned char *a, unsigned char *b);
 static inline void dump_packet(unsigned char *buf, int len);
-static inline void dump_arp_packet(struct ether_hdr *eh);
-static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len);
-static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+static inline void dump_arp_packet(struct rte_ether_hdr *eh);
+static inline int process_arp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, int len);
+static inline int process_icmp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv4_hdr *iph,
 			       int ipv4_hdrlen, int len);
-static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len);
-static inline int process_http(int ip_version, void *iph, struct tcp_hdr *tcph,
+static inline int process_http(int ip_version, void *iph, struct rte_tcp_hdr *tcph,
 			       unsigned char *http_req, int req_len, unsigned char *http_resp,
 			       int *resp_len, int *resp_in_req);
 
@@ -213,7 +213,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 	int retval;
 	uint16_t q;
 
-	if (port >= rte_eth_dev_count())
+	if (port >= rte_eth_dev_count_total())
 		return -1;
 
 	/* Configure the Ethernet device. */
@@ -260,8 +260,8 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		printf("I will not use hardware checksum\n");
 
 	/* Dsiable features that are not supported by port's HW */
-	if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM))
-		dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
+	//if (!(dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM))
+	//	dev_info.default_txconf.txq_flags |= ETH_TXQ_FLAGS_NOXSUMTCP;
 
 	/* Allocate and set up 1 TX queue per Ethernet port. */
 	for (q = 0; q < tx_rings; q++) {
@@ -278,7 +278,7 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 
 	/* Display the port MAC address. */
-	struct ether_addr addr;
+	struct rte_ether_addr addr;
 	rte_eth_macaddr_get(port, &addr);
 	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
 	       " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
@@ -321,10 +321,10 @@ static inline void dump_packet(unsigned char *buf, int len)
 	}
 }
 
-static inline void dump_arp_packet(struct ether_hdr *eh)
+static inline void dump_arp_packet(struct rte_ether_hdr *eh)
 {
-	struct arp_hdr *ah;
-	ah = (struct arp_hdr *)((unsigned char *)eh + ETHER_HDR_LEN);
+	struct rte_arp_hdr *ah;
+	ah = (struct rte_arp_hdr *)((unsigned char *)eh + RTE_ETHER_HDR_LEN);
 	printf("+++++++++++++++++++++++++++++++++++++++\n");
 	printf("ARP PACKET: %p \n", eh);
 	printf("ETHER DST MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
@@ -334,9 +334,9 @@ static inline void dump_arp_packet(struct ether_hdr *eh)
 	printf("ETHER SRC MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n", eh->s_addr.addr_bytes[0],
 	       eh->s_addr.addr_bytes[1], eh->s_addr.addr_bytes[2], eh->s_addr.addr_bytes[3],
 	       eh->s_addr.addr_bytes[4], eh->s_addr.addr_bytes[5]);
-	printf("H/D TYPE : %x PROTO TYPE : %X \n", ah->arp_hrd, ah->arp_pro);
-	printf("H/D LEN  : %x PROTO LEN  : %X \n", ah->arp_hln, ah->arp_pln);
-	printf("OPERATION : %x \n", ah->arp_op);
+	printf("H/D TYPE : %x PROTO TYPE : %X \n", ah->arp_hardware, ah->arp_protocol);
+	printf("H/D LEN  : %x PROTO LEN  : %X \n", ah->arp_hlen, ah->arp_plen);
+	printf("OPERATION : %x \n", ah->arp_opcode);
 	printf("SENDER MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
 	       ah->arp_data.arp_sha.addr_bytes[0], ah->arp_data.arp_sha.addr_bytes[1],
 	       ah->arp_data.arp_sha.addr_bytes[2], ah->arp_data.arp_sha.addr_bytes[3],
@@ -357,20 +357,20 @@ static inline void dump_arp_packet(struct ether_hdr *eh)
 	       ((unsigned)((unsigned char *)&(ah->arp_data.arp_tip))[3]));
 }
 
-static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int len)
+static inline int process_arp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, int len)
 {
-	struct arp_hdr *ah = (struct arp_hdr *)((unsigned char *)eh + ETHER_HDR_LEN);
+	struct rte_arp_hdr *ah = (struct rte_arp_hdr *)((unsigned char *)eh + RTE_ETHER_HDR_LEN);
 #ifdef DEBUGARP
 	dump_arp_packet(eh);
 #endif
 	recv_arp_pkts++;
-	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct arp_hdr))) {
+	if (len < (int)(sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for arp packet??\n", len);
 #endif
 		return 0;
 	}
-	if (rte_cpu_to_be_16(ah->arp_op) != ARP_OP_REQUEST) {	// ARP request
+	if (rte_cpu_to_be_16(ah->arp_opcode) != RTE_ARP_OP_REQUEST) {	// ARP request
 		return 0;
 	}
 	if (my_ip == ah->arp_data.arp_tip) {
@@ -379,7 +379,7 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 #endif
 		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
 		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
-		ah->arp_op = rte_cpu_to_be_16(ARP_OP_REPLY);
+		ah->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
 		ah->arp_data.arp_tha = ah->arp_data.arp_sha;
 		rte_memcpy((unsigned char *)&ah->arp_data.arp_sha, (unsigned char *)&my_eth_addr,
 			   6);
@@ -397,21 +397,21 @@ static inline int process_arp(struct rte_mbuf *mbuf, struct ether_hdr *eh, int l
 	return 0;
 }
 
-static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+static inline int process_icmp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv4_hdr *iph,
 			       int ipv4_hdrlen, int len)
 {
-	struct icmp_hdr *icmph = (struct icmp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
+	struct rte_icmp_hdr *icmph = (struct rte_icmp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
 #endif
 	recv_icmp_pkts++;
-	if (len < (int)(sizeof(struct ether_hdr) + sizeof(struct icmp_hdr))) {
+	if (len < (int)(sizeof(struct rte_ether_hdr) + sizeof(struct rte_icmp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for icmp packet??\n", len);
 #endif
 		return 0;
 	}
-	if ((icmph->icmp_type == IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code == 0)) {	// ICMP echo req
+	if ((icmph->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) && (icmph->icmp_code == 0)) {	// ICMP echo req
 		rte_memcpy((unsigned char *)&eh->d_addr, (unsigned char *)&eh->s_addr, 6);
 		rte_memcpy((unsigned char *)&eh->s_addr, (unsigned char *)&my_eth_addr, 6);
 		iph->dst_addr = iph->src_addr;
@@ -419,9 +419,9 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 		iph->time_to_live = TTL;
 		iph->hdr_checksum = 0;
 		iph->hdr_checksum = rte_ipv4_cksum(iph);
-		icmph->icmp_type = IP_ICMP_ECHO_REPLY;
+		icmph->icmp_type = RTE_IP_ICMP_ECHO_REPLY;
 		icmph->icmp_cksum = 0;
-		icmph->icmp_cksum = ~rte_raw_cksum(icmph, len - ETHER_HDR_LEN - ipv4_hdrlen);
+		icmph->icmp_cksum = ~rte_raw_cksum(icmph, len - RTE_ETHER_HDR_LEN - ipv4_hdrlen);
 #ifdef DEBUGICMP
 		printf("I will send reply\n");
 		dump_packet(rte_pktmbuf_mtod(mbuf, unsigned char *), len);
@@ -436,17 +436,17 @@ static inline int process_icmp(struct rte_mbuf *mbuf, struct ether_hdr *eh, stru
 	return 0;
 }
 
-static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv6_hdr *ip6h,
+static inline int process_icmpv6(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv6_hdr *ip6h,
 				 int len)
 {
-	struct icmp_hdr *icmph =
-	    (struct icmp_hdr *)((unsigned char *)(ip6h) + sizeof(struct ipv6_hdr));
+	struct rte_icmp_hdr *icmph =
+	    (struct rte_icmp_hdr *)((unsigned char *)(ip6h) + sizeof(struct rte_ipv6_hdr));
 #ifdef DEBUGICMP
 	printf("icmp type=%d, code=%d\n", icmph->icmp_type, icmph->icmp_code);
 #endif
 	recv_icmpv6_pkts++;
 	if (len <
-	    (int)(sizeof(struct ether_hdr) + sizeof(struct ipv6_hdr) + sizeof(struct icmp_hdr))) {
+	    (int)(sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv6_hdr) + sizeof(struct rte_icmp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for icmp packet??\n", len);
 #endif
@@ -509,16 +509,16 @@ static inline int process_icmpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, st
 	return 0;
 }
 
-static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv4_hdr *iph,
+static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv4_hdr *iph,
 			      int ipv4_hdrlen, int len)
 {
-	struct tcp_hdr *tcph = (struct tcp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
+	struct rte_tcp_hdr *tcph = (struct rte_tcp_hdr *)((unsigned char *)(iph) + ipv4_hdrlen);
 	int pkt_len;
 #ifdef DEBUGTCP
 	printf("TCP packet, dport=%d\n", rte_be_to_cpu_16(tcph->dst_port));
 	printf("TCP flags=%d\n", tcph->tcp_flags);
 #endif
-	if (len < (int)(sizeof(struct ether_hdr) + ipv4_hdrlen + sizeof(struct tcp_hdr))) {
+	if (len < (int)(sizeof(struct rte_ether_hdr) + ipv4_hdrlen + sizeof(struct rte_tcp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for tcp packet??\n", len);
 #endif
@@ -543,20 +543,20 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 				     *(uint32_t *) & iph->dst_addr +
 				     *(uint16_t *) & tcph->src_port +
 				     *(uint16_t *) & tcph->dst_port + tcp_syn_random);
-		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
-		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
+		pkt_len = ipv4_hdrlen + sizeof(struct rte_tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		iph->time_to_live = TTL;
-		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + RTE_ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->l2_len = RTE_ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
 		} else {
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -583,20 +583,20 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		swap_4bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack);
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
-		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
-		pkt_len = ipv4_hdrlen + sizeof(struct tcp_hdr);
+		pkt_len = ipv4_hdrlen + sizeof(struct rte_tcp_hdr);
 		iph->total_length = rte_cpu_to_be_16(pkt_len);
 		iph->hdr_checksum = 0;
 		iph->time_to_live = TTL;
-		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + ETHER_HDR_LEN;
+		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) = pkt_len + RTE_ETHER_HDR_LEN;
 		if (hardware_cksum) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = ETHER_HDR_LEN;
+			mbuf->l2_len = RTE_ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+			tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
 		} else {
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -617,7 +617,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		int tcp_payload_len = pkt_len - ipv4_hdrlen - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXIPLEN + sizeof(struct tcp_hdr)];	// http_response
+		unsigned char buf[MAXIPLEN + sizeof(struct rte_tcp_hdr)];	// http_response
 		int resp_in_req = 0;
 		recv_tcp_data_pkts++;
 #ifdef DEBUGTCP
@@ -643,7 +643,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 		}
 		tcp_payload = (unsigned char *)iph + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 		if (process_http
-		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct tcp_hdr),
+		    (4, iph, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct rte_tcp_hdr),
 		     &ntcp_payload_len, &resp_in_req) == 0)
 			return 0;
 #ifdef DEBUGTCP
@@ -663,7 +663,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 
 		if (ntcp_payload_len <= TCPMSS) {	// tcp packet fit in one IP packet
 			if (!resp_in_req)
-				rte_memcpy(tcp_payload, buf + sizeof(struct tcp_hdr),
+				rte_memcpy(tcp_payload, buf + sizeof(struct rte_tcp_hdr),
 					   ntcp_payload_len);
 			pkt_len = ntcp_payload_len + ipv4_hdrlen + (tcph->data_off >> 4) * 4;
 			iph->total_length = rte_cpu_to_be_16(pkt_len);
@@ -672,14 +672,14 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			fprintf(stderr, "new pkt len=%d\n", pkt_len);
 #endif
 			rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
-			    pkt_len + ETHER_HDR_LEN;
+			    pkt_len + RTE_ETHER_HDR_LEN;
 			if (hardware_cksum) {
 				// printf("ol_flags=%ld\n",mbuf->ol_flags);
 				mbuf->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM;
-				mbuf->l2_len = ETHER_HDR_LEN;
+				mbuf->l2_len = RTE_ETHER_HDR_LEN;
 				mbuf->l3_len = ipv4_hdrlen;
 				mbuf->l4_len = ntcp_payload_len;
-				tcph->cksum = rte_ipv4_phdr_cksum((const struct ipv4_hdr *)iph, 0);
+				tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
 			} else {
 				tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 				iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -699,21 +699,21 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 			return 0;
 		} else {	// tcp packet could not fit in one IP packet, I will send one by one
 			struct rte_mbuf *frag;
-			struct ether_hdr *neh;
-			struct ipv4_hdr *niph;
-			struct tcp_hdr *ntcph;
-			int left = ntcp_payload_len + sizeof(struct tcp_hdr);
+			struct rte_ether_hdr *neh;
+			struct rte_ipv4_hdr *niph;
+			struct rte_tcp_hdr *ntcph;
+			int left = ntcp_payload_len + sizeof(struct rte_tcp_hdr);
 			uint32_t offset = 0;
 			if (resp_in_req) {
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
-			iph->total_length = rte_cpu_to_be_16(left + sizeof(struct ipv4_hdr));
+			iph->total_length = rte_cpu_to_be_16(left + sizeof(struct rte_ipv4_hdr));
 			iph->fragment_offset = 0;
 			iph->packet_id = tcph->dst_port;
-			tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
-			ntcph = (struct tcp_hdr *)buf;
-			rte_memcpy(ntcph, tcph, sizeof(struct tcp_hdr));	// copy tcp header to begin of buf
+			tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
+			ntcph = (struct rte_tcp_hdr *)buf;
+			rte_memcpy(ntcph, tcph, sizeof(struct rte_tcp_hdr));	// copy tcp header to begin of buf
 			ntcph->cksum = rte_ipv4_udptcp_cksum(iph, ntcph);	// trick but works, now eth/ip header in mbuf, tcp packet in buf
 			while (left > 0) {
 				len = left < TCPMSS ? left : (TCPMSS & 0xfff0);
@@ -726,29 +726,29 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 					printf("mutli packet alloc error\n");
 					return 0;
 				}
-				neh = rte_pktmbuf_mtod(frag, struct ether_hdr *);
-				rte_memcpy(neh, eh, ETHER_HDR_LEN + sizeof(struct ipv4_hdr));	// copy eth/ip header
-				niph = (struct ipv4_hdr *)((unsigned char *)(neh) + ETHER_HDR_LEN);
+				neh = rte_pktmbuf_mtod(frag, struct rte_ether_hdr *);
+				rte_memcpy(neh, eh, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv4_hdr));	// copy eth/ip header
+				niph = (struct rte_ipv4_hdr *)((unsigned char *)(neh) + RTE_ETHER_HDR_LEN);
 				ntcph =
-				    (struct tcp_hdr *)((unsigned char *)(niph) +
-						       sizeof(struct ipv4_hdr));
+				    (struct rte_tcp_hdr *)((unsigned char *)(niph) +
+						       sizeof(struct rte_ipv4_hdr));
 				rte_memcpy(ntcph, buf + offset, len);
 
-				pkt_len = len + sizeof(struct ipv4_hdr);
+				pkt_len = len + sizeof(struct rte_ipv4_hdr);
 				niph->total_length = rte_cpu_to_be_16(pkt_len);
 				niph->fragment_offset = rte_cpu_to_be_16(offset >> 3);
 				if (left > 0)
-					niph->fragment_offset |= rte_cpu_to_be_16(IPV4_HDR_MF_FLAG);
+					niph->fragment_offset |= rte_cpu_to_be_16(RTE_IPV4_HDR_MF_FLAG);
 #ifdef DEBUGTCP
 				fprintf(stderr, "frag offset %d, pkt len=%d\n", offset, pkt_len);
 #endif
 				rte_pktmbuf_data_len(frag) = rte_pktmbuf_pkt_len(frag) =
-				    pkt_len + ETHER_HDR_LEN;
+				    pkt_len + RTE_ETHER_HDR_LEN;
 				if (hardware_cksum) {
 					// printf("ol_flags=%ld\n", frag->ol_flags);
 					frag->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
-					frag->l2_len = ETHER_HDR_LEN;
-					frag->l3_len = sizeof(struct ipv4_hdr);
+					frag->l2_len = RTE_ETHER_HDR_LEN;
+					frag->l3_len = sizeof(struct rte_ipv4_hdr);
 					frag->l4_len = len;
 				} else
 					niph->hdr_checksum = rte_ipv4_cksum(niph);
@@ -775,18 +775,18 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct ether_hdr *eh, struc
 	return 0;
 }
 
-static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, struct ipv6_hdr *ip6h,
+static inline int process_tcpv6(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, struct rte_ipv6_hdr *ip6h,
 				int len)
 {
-	struct tcp_hdr *tcph =
-	    (struct tcp_hdr *)((unsigned char *)(ip6h) + sizeof(struct ipv6_hdr));
+	struct rte_tcp_hdr *tcph =
+	    (struct rte_tcp_hdr *)((unsigned char *)(ip6h) + sizeof(struct rte_ipv6_hdr));
 	int payload_len;
 #ifdef DEBUGTCP
 	printf("TCP packet, dport=%d\n", rte_be_to_cpu_16(tcph->dst_port));
 	printf("TCP flags=%d\n", tcph->tcp_flags);
 #endif
 	if (len <
-	    (int)(sizeof(struct ether_hdr) + sizeof(struct ipv6_hdr) + sizeof(struct tcp_hdr))) {
+	    (int)(sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv6_hdr) + sizeof(struct rte_tcp_hdr))) {
 #ifdef DEBUGICMP
 		printf("len = %d is too small for tcp packet??\n", len);
 #endif
@@ -810,20 +810,20 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 				     *(uint32_t *) & ip6h->dst_addr +
 				     *(uint16_t *) & tcph->src_port +
 				     *(uint16_t *) & tcph->dst_port + tcp_syn_random);
-		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
-		payload_len = sizeof(struct tcp_hdr);
+		payload_len = sizeof(struct rte_tcp_hdr);
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
-		    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		    payload_len + sizeof(struct rte_ipv6_hdr) + RTE_ETHER_HDR_LEN;
 		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = sizeof(struct ether_hdr);
-			mbuf->l3_len = sizeof(struct ipv6_hdr);
-			mbuf->l4_len = sizeof(struct tcp_hdr);
-			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+			mbuf->l2_len = sizeof(struct rte_ether_hdr);
+			mbuf->l3_len = sizeof(struct rte_ipv6_hdr);
+			mbuf->l4_len = sizeof(struct rte_tcp_hdr);
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct rte_ipv6_hdr *)ip6h, 0);
 		} else {
 			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
 		}
@@ -849,20 +849,20 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		swap_4bytes((unsigned char *)&tcph->sent_seq, (unsigned char *)&tcph->recv_ack);
 		tcph->tcp_flags = TCP_ACK;
 		tcph->recv_ack = rte_cpu_to_be_32(rte_be_to_cpu_32(tcph->recv_ack) + 1);
-		tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
+		tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
 		tcph->cksum = 0;
-		payload_len = sizeof(struct tcp_hdr);
+		payload_len = sizeof(struct rte_tcp_hdr);
 		ip6h->payload_len = rte_cpu_to_be_16(payload_len);
 		ip6h->hop_limits = TTL;
 		rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
-		    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+		    payload_len + sizeof(struct rte_ipv6_hdr) + RTE_ETHER_HDR_LEN;
 		if (hardware_cksum_v6) {
 			// printf("ol_flags=%ld\n",mbuf->ol_flags);
 			mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
-			mbuf->l2_len = sizeof(struct ether_hdr);
-			mbuf->l3_len = sizeof(struct ipv6_hdr);
-			mbuf->l4_len = sizeof(struct tcp_hdr);
-			tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+			mbuf->l2_len = sizeof(struct rte_ether_hdr);
+			mbuf->l3_len = sizeof(struct rte_ipv6_hdr);
+			mbuf->l4_len = sizeof(struct rte_tcp_hdr);
+			tcph->cksum = rte_ipv6_phdr_cksum((const struct rte_ipv6_hdr *)ip6h, 0);
 		} else {
 			tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
 		}
@@ -882,7 +882,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		int tcp_payload_len = payload_len - (tcph->data_off >> 4) * 4;
 		int ntcp_payload_len = MAXIPLEN;
 		unsigned char *tcp_payload;
-		unsigned char buf[MAXIPLEN + sizeof(struct tcp_hdr)];	// http_respone
+		unsigned char buf[MAXIPLEN + sizeof(struct rte_tcp_hdr)];	// http_respone
 		int resp_in_req = 0;
 		recv_tcpv6_data_pkts++;
 
@@ -909,7 +909,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 		}
 		tcp_payload = (unsigned char *)tcph + (tcph->data_off >> 4) * 4;
 		if (process_http
-		    (6, ip6h, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct tcp_hdr),
+		    (6, ip6h, tcph, tcp_payload, tcp_payload_len, buf + sizeof(struct rte_tcp_hdr),
 		     &ntcp_payload_len, &resp_in_req)
 		    == 0)
 			return 0;
@@ -936,14 +936,14 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 			fprintf(stderr, "new payload len=%d\n", payload_len);
 #endif
 			rte_pktmbuf_data_len(mbuf) = rte_pktmbuf_pkt_len(mbuf) =
-			    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+			    payload_len + sizeof(struct rte_ipv6_hdr) + RTE_ETHER_HDR_LEN;
 			if (hardware_cksum_v6) {
 				// printf("ol_flags=%ld\n",mbuf->ol_flags);
 				mbuf->ol_flags = PKT_TX_IPV6 | PKT_TX_TCP_CKSUM;
-				mbuf->l2_len = sizeof(struct ether_hdr);
-				mbuf->l3_len = sizeof(struct ipv6_hdr);
-				mbuf->l4_len = sizeof(struct tcp_hdr) + ntcp_payload_len;
-				tcph->cksum = rte_ipv6_phdr_cksum((const struct ipv6_hdr *)ip6h, 0);
+				mbuf->l2_len = sizeof(struct rte_ether_hdr);
+				mbuf->l3_len = sizeof(struct rte_ipv6_hdr);
+				mbuf->l4_len = sizeof(struct rte_tcp_hdr) + ntcp_payload_len;
+				tcph->cksum = rte_ipv6_phdr_cksum((const struct rte_ipv6_hdr *)ip6h, 0);
 			} else {
 				tcph->cksum = rte_ipv6_udptcp_cksum(ip6h, tcph);
 			}
@@ -962,20 +962,20 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 			return 0;
 		} else {	// tcp packet could not fit in one IP packet, I will send one by one
 			struct rte_mbuf *frag;
-			struct ether_hdr *neh;
-			struct ipv6_hdr *nip6h;
-			struct tcp_hdr *ntcph;
+			struct rte_ether_hdr *neh;
+			struct rte_ipv6_hdr *nip6h;
+			struct rte_tcp_hdr *ntcph;
 			struct ipv6_extension_fragment *ipv6ef;
-			int left = ntcp_payload_len + sizeof(struct tcp_hdr);
+			int left = ntcp_payload_len + sizeof(struct rte_tcp_hdr);
 			uint32_t offset = 0;
 			if (resp_in_req) {
 				printf("BIG TCP packet, must returned in my buf\n");
 				return 0;
 			}
 			ip6h->payload_len = rte_cpu_to_be_16(left);
-			tcph->data_off = (sizeof(struct tcp_hdr) / 4) << 4;
-			ntcph = (struct tcp_hdr *)buf;
-			rte_memcpy(ntcph, tcph, sizeof(struct tcp_hdr));	// copy tcp header to begin of buf
+			tcph->data_off = (sizeof(struct rte_tcp_hdr) / 4) << 4;
+			ntcph = (struct rte_tcp_hdr *)buf;
+			rte_memcpy(ntcph, tcph, sizeof(struct rte_tcp_hdr));	// copy tcp header to begin of buf
 			ntcph->cksum = rte_ipv6_udptcp_cksum(ip6h, ntcph);	// trick but works, now eth/ip header in mbuf, tcp packet in buf
 
 			while (left > 0) {
@@ -989,15 +989,15 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 					printf("mutli packet alloc error\n");
 					return 0;
 				}
-				neh = rte_pktmbuf_mtod(frag, struct ether_hdr *);
-				rte_memcpy(neh, eh, ETHER_HDR_LEN + sizeof(struct ipv6_hdr));	// copy eth/ip header
-				nip6h = (struct ipv6_hdr *)((unsigned char *)(neh) + ETHER_HDR_LEN);
+				neh = rte_pktmbuf_mtod(frag, struct rte_ether_hdr *);
+				rte_memcpy(neh, eh, RTE_ETHER_HDR_LEN + sizeof(struct rte_ipv6_hdr));	// copy eth/ip header
+				nip6h = (struct rte_ipv6_hdr *)((unsigned char *)(neh) + RTE_ETHER_HDR_LEN);
 				ipv6ef =
 				    (struct ipv6_extension_fragment *)((unsigned char *)neh +
-								       ETHER_HDR_LEN +
-								       sizeof(struct ipv6_hdr));
+								       RTE_ETHER_HDR_LEN +
+								       sizeof(struct rte_ipv6_hdr));
 				ntcph =
-				    (struct tcp_hdr *)((unsigned char *)(ipv6ef) +
+				    (struct rte_tcp_hdr *)((unsigned char *)(ipv6ef) +
 						       sizeof(struct ipv6_extension_fragment));
 				rte_memcpy(ntcph, buf + offset, len);
 				ipv6ef->next_header = 6;	// TCP
@@ -1015,7 +1015,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 					payload_len);
 #endif
 				rte_pktmbuf_data_len(frag) = rte_pktmbuf_pkt_len(frag) =
-				    payload_len + sizeof(struct ipv6_hdr) + ETHER_HDR_LEN;
+				    payload_len + sizeof(struct rte_ipv6_hdr) + RTE_ETHER_HDR_LEN;
 #ifdef DEBUGTCP
 				printf("I will reply following:\n");
 				dump_packet((unsigned char *)neh, rte_pktmbuf_data_len(frag));
@@ -1045,7 +1045,7 @@ static inline int process_tcpv6(struct rte_mbuf *mbuf, struct ether_hdr *eh, str
 static __attribute__ ((noreturn))
 void lcore_main(void)
 {
-	const uint16_t nb_ports = rte_eth_dev_count();
+	const uint16_t nb_ports = rte_eth_dev_count_total();
 	uint16_t port;
 
 	/*
@@ -1074,7 +1074,7 @@ void lcore_main(void)
 #endif
 		for (i = 0; i < nb_rx; i++) {
 			int len = rte_pktmbuf_data_len(bufs[i]);
-			struct ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct ether_hdr *);
+			struct rte_ether_hdr *eh = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
 			recv_pkts++;
 			if (recv_pkts % STATS_PKTS == 0)
 				print_stats();
@@ -1084,10 +1084,10 @@ void lcore_main(void)
 			dump_packet((unsigned char *)eh, len);
 			printf("ethernet proto=%4X\n", rte_cpu_to_be_16(eh->ether_type));
 #endif
-			if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {	// IPv4 protocol
-				struct ipv4_hdr *iph;
-				iph = (struct ipv4_hdr *)((unsigned char *)(eh) + ETHER_HDR_LEN);
-				int ipv4_hdrlen = (iph->version_ihl & IPV4_HDR_IHL_MASK) << 2;
+			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {	// IPv4 protocol
+				struct rte_ipv4_hdr *iph;
+				iph = (struct rte_ipv4_hdr *)((unsigned char *)(eh) + RTE_ETHER_HDR_LEN);
+				int ipv4_hdrlen = (iph->version_ihl & RTE_IPV4_HDR_IHL_MASK) << 2;
 #ifdef DEBUGPACKET
 				printf("ver=%d, frag_off=%d, daddr=%s pro=%d\n",
 				       (iph->version_ihl & 0xF0) >> 4,
@@ -1095,7 +1095,7 @@ void lcore_main(void)
 				       IPV4_HDR_OFFSET_MASK, INET_NTOA(iph->dst_addr),
 				       iph->next_proto_id);
 #endif
-				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(IPV4_HDR_OFFSET_MASK)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
+				if (((iph->version_ihl & 0xF0) == 0x40) && ((iph->fragment_offset & rte_cpu_to_be_16(RTE_IPV4_HDR_OFFSET_MASK)) == 0) && (iph->dst_addr == my_ip)) {	// ipv4
 #ifdef DEBUGPACKET
 					printf("ipv4 packet\n");
 #endif
@@ -1110,14 +1110,14 @@ void lcore_main(void)
 							continue;
 					}
 				}
-			} else if (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_ARP)) {	// ARP protocol
+			} else if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {	// ARP protocol
 				process_pkts++;
 				if (process_arp(bufs[i], eh, len))
 					continue;
-			} else if ((has_ipv6) && (eh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv6))) {	// IPv6 protocol
-				struct ipv6_hdr *ip6h;
+			} else if ((has_ipv6) && (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))) {	// IPv6 protocol
+				struct rte_ipv6_hdr *ip6h;
 				int ver = 0;
-				ip6h = (struct ipv6_hdr *)((unsigned char *)(eh) + ETHER_HDR_LEN);
+				ip6h = (struct rte_ipv6_hdr *)((unsigned char *)(eh) + RTE_ETHER_HDR_LEN);
 				ver = (ip6h->vtc_flow & 0xF0) >> 4;
 #ifdef DEBUGPACKET
 				char h[100];
@@ -1166,7 +1166,7 @@ int main(int argc, char *argv[])
 
 	int a, b, c, d;
 	sscanf(argv[1], "%d.%d.%d.%d", &a, &b, &c, &d);
-	my_ip = rte_cpu_to_be_32(IPv4(a, b, c, d));
+	my_ip = rte_cpu_to_be_32(RTE_IPV4(a, b, c, d));
 
 	tcp_port = rte_cpu_to_be_16(atoi(argv[2]));
 
@@ -1199,9 +1199,9 @@ int main(int argc, char *argv[])
 	srand(time(NULL));
 	tcp_syn_random = rand();
 	/* Check that there is an even number of ports to send/receive on. */
-	nb_ports = rte_eth_dev_count();
-	if (nb_ports != 1)
-		rte_exit(EXIT_FAILURE, "Error: need 1 ports, but you have %d\n", nb_ports);
+	nb_ports = rte_eth_dev_count_total();
+	//if (nb_ports != 1)
+	//	rte_exit(EXIT_FAILURE, "Error: need 1 ports, but you have %d\n", nb_ports);
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	mbuf_pool =

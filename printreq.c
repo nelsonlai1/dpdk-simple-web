@@ -42,7 +42,7 @@ char test_data[] =
     "2923456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
 
 static inline int process_http(int ip_version __attribute__ ((unused)),
-			       void *iph __attribute__ ((unused)), struct tcp_hdr *tcph
+			       void *iph __attribute__ ((unused)), struct rte_tcp_hdr *tcph
 			       __attribute__ ((unused)), unsigned char *http_req
 			       __attribute__ ((unused)), int req_len
 			       __attribute__ ((unused)), unsigned char *http_resp, int *resp_len,

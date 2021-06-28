@@ -556,7 +556,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, s
 			mbuf->l2_len = RTE_ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+			//tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+			iph->hdr_checksum = rte_ipv4_cksum(iph);
 		} else {
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -596,7 +598,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, s
 			mbuf->l2_len = RTE_ETHER_HDR_LEN;
 			mbuf->l3_len = ipv4_hdrlen;
 			mbuf->l4_len = 0;
-			tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+			//tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+			iph->hdr_checksum = rte_ipv4_cksum(iph);
 		} else {
 			tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 			iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -679,7 +683,9 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, s
 				mbuf->l2_len = RTE_ETHER_HDR_LEN;
 				mbuf->l3_len = ipv4_hdrlen;
 				mbuf->l4_len = ntcp_payload_len;
-				tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+				//tcph->cksum = rte_ipv4_phdr_cksum((const struct rte_ipv4_hdr *)iph, 0);
+				tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
+				iph->hdr_checksum = rte_ipv4_cksum(iph);
 			} else {
 				tcph->cksum = rte_ipv4_udptcp_cksum(iph, tcph);
 				iph->hdr_checksum = rte_ipv4_cksum(iph);
@@ -750,6 +756,7 @@ static inline int process_tcp(struct rte_mbuf *mbuf, struct rte_ether_hdr *eh, s
 					frag->l2_len = RTE_ETHER_HDR_LEN;
 					frag->l3_len = sizeof(struct rte_ipv4_hdr);
 					frag->l4_len = len;
+					niph->hdr_checksum = rte_ipv4_cksum(niph);
 				} else
 					niph->hdr_checksum = rte_ipv4_cksum(niph);
 
